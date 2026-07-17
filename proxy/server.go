@@ -71,6 +71,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Anthropic Messages API (Claude Code CLI, opencode). Accept both the bare
+	// path and any /v1/messages variant (some clients append query/beta flags).
+	if strings.HasPrefix(r.URL.Path, "/v1/messages/count_tokens") || strings.HasPrefix(r.URL.Path, "/anthropic/v1/messages/count_tokens") {
+		s.serveAnthropicCountTokens(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/v1/messages") || strings.HasPrefix(r.URL.Path, "/anthropic/v1/messages") {
+		s.serveAnthropic(w, r)
+		return
+	}
+
+	// OpenAI Chat Completions API (Codex CLI, opencode).
+	if strings.HasPrefix(r.URL.Path, "/v1/chat/completions") || strings.HasPrefix(r.URL.Path, "/openai/v1/chat/completions") {
+		s.serveOpenAI(w, r)
+		return
+	}
+	// OpenAI models stub (some clients probe this on startup).
+	if r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || r.URL.Path == "/openai/v1/models") {
+		s.serveOpenAIModels(w, r)
+		return
+	}
+
 	// Zero-login client bootstrap: `curl -fsSL http://PROXY/setup-client.sh | bash -s -- http://PROXY REGION`
 	if r.Method == http.MethodGet && r.URL.Path == "/setup-client.sh" {
 		if data, ok := readSetupClientScript(); ok {
@@ -119,7 +141,31 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	amzTarget := r.Header.Get("X-Amz-Target")
 	isChat := strings.Contains(amzTarget, "GenerateAssistantResponse") ||
 		strings.Contains(amzTarget, "StreamingService")
+
+	// Ground-truth capture (RE): dump full request (headers + body) for chat
+	// turns so we can build an accurate Anthropic/OpenAI translation layer.
+	if dir := os.Getenv("KPP_CAPTURE"); dir != "" && isChat {
+		var sb strings.Builder
+		sb.WriteString(r.Method + " " + r.URL.Path + "\n")
+		for k, v := range r.Header {
+			if strings.EqualFold(k, "Authorization") {
+				sb.WriteString(k + ": <redacted>\n")
+				continue
+			}
+			sb.WriteString(k + ": " + strings.Join(v, ",") + "\n")
+		}
+		sb.WriteString("\n")
+		sb.Write(body)
+		_ = os.WriteFile(filepath.Join(dir, "chat-request.txt"),
+			[]byte(sb.String()), 0600)
+	}
 	isUsage := strings.Contains(amzTarget, "GetUsageLimits")
+
+	if os.Getenv("KPP_DEBUG_REQ") != "" {
+		log.Printf("[req] method=%s path=%s target=%q isChat=%v isUsage=%v bodyLen=%d hasProfileArn=%v",
+			r.Method, r.URL.Path, amzTarget, isChat, isUsage, len(body),
+			strings.Contains(string(body), "profileArn"))
+	}
 
 	excluded := make(map[string]bool)
 	retryLimit := s.pool.RetryLimit()
@@ -231,10 +277,17 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 	// budget, not the shared pool account's real quota.
 	if isUsage && apiKeyID != "" && resp.StatusCode == 200 {
 		if k, ok := s.cfg.GetAPIKey(apiKeyID); ok && k.CreditLimit > 0 {
-			if s.rewriteUsageResponse(w, resp, k) {
+			ok := s.rewriteUsageResponse(w, resp, k)
+			if os.Getenv("KPP_DEBUG_REQ") != "" {
+				log.Printf("[usage] rewrite handled=%v status=%d contentEncoding=%q",
+					ok, resp.StatusCode, resp.Header.Get("Content-Encoding"))
+			}
+			if ok {
 				return
 			}
 		}
+	} else if isUsage && os.Getenv("KPP_DEBUG_REQ") != "" {
+		log.Printf("[usage] SKIP rewrite: apiKeyID=%q status=%d", apiKeyID, resp.StatusCode)
 	}
 
 	// Propagate upstream headers + status.
@@ -249,6 +302,14 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 	sink := &MeteringSink{}
 	if isChat {
 		reader = io.TeeReader(resp.Body, sink)
+	}
+
+	// Ground-truth capture (RE): tee the raw chat response bytes to a file so we
+	// can decode assistantResponseEvent/toolUseEvent payload shapes offline.
+	var capBuf *bytes.Buffer
+	if dir := os.Getenv("KPP_CAPTURE"); dir != "" && isChat {
+		capBuf = &bytes.Buffer{}
+		reader = io.TeeReader(reader, capBuf)
 	}
 
 	// Stream in chunks so SSE/event-stream flushes promptly to the CLI.
@@ -266,6 +327,11 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 		if err != nil {
 			break
 		}
+	}
+
+	if capBuf != nil {
+		_ = os.WriteFile(filepath.Join(os.Getenv("KPP_CAPTURE"), "chat-response.bin"),
+			capBuf.Bytes(), 0600)
 	}
 
 	// Record usage after the turn.
@@ -329,14 +395,62 @@ func (s *Server) rewriteUsageResponse(w http.ResponseWriter, resp *http.Response
 	if !ok {
 		return false
 	}
+	keyReset := keyResetUnix(k)
 	for _, e := range arr {
 		if o, ok := e.(map[string]any); ok {
-			o["currentUsage"] = k.Credits
-			o["usageLimit"] = k.CreditLimit
+			// The kiro-cli /usage panel renders the *WithPrecision fields for
+			// KIRO POWER plans (currentUsageWithPrecision / usageLimitWithPrecision).
+			// IMPORTANT: the plain currentUsage/usageLimit fields are INTEGERS
+			// (invocation counts) in the upstream schema — the CLI deserializes
+			// them as integers, so a float here breaks parsing and the panel
+			// hangs on "Loading usage data...". Keep plain fields integer and
+			// put the fractional credit values only in the *WithPrecision fields.
+			o["currentUsage"] = int64(k.Credits)
+			o["usageLimit"] = int64(k.CreditLimit)
+			o["currentUsageWithPrecision"] = k.Credits
+			o["usageLimitWithPrecision"] = k.CreditLimit
+			// Zero out any overage so the panel never leaks pool-account overages.
+			o["currentOveragesWithPrecision"] = 0
+			o["overageCap"] = int64(0)
+			o["overageCapWithPrecision"] = 0
+			o["overageCredits"] = []any{}
+			o["nextDateReset"] = keyReset
 			delete(o, "currentOverages")
 			delete(o, "overageCharges")
 		}
 	}
+
+	// Scrub pool-account identity so an API-key client never sees which real
+	// account backs it. userInfo.userId is the account's true directory ID.
+	// Keep the object shape intact (deleting it can make the CLI hang on
+	// deserialize) but replace the id with a synthetic per-key value.
+	if ui, ok := m["userInfo"].(map[string]any); ok {
+		ui["userId"] = "kpp-" + k.ID
+	}
+
+	// Rebrand the subscription block so the /usage panel reads as an API-key
+	// budget rather than the pool account's real Kiro plan. Only the title
+	// string is changed here — enum fields (`type`, overageStatus,
+	// subscriptionManagementTarget) are left intact to avoid deserialize
+	// failures that would hang the panel. The org-footer / reset-date tweaks
+	// are handled as a separate, verified step.
+	if si, ok := m["subscriptionInfo"].(map[string]any); ok {
+		title := "API KEY"
+		if strings.TrimSpace(k.Name) != "" {
+			title = "API KEY: " + k.Name
+		}
+		si["subscriptionTitle"] = title
+		// NOTE: the "contact your account administrator" footer is driven by the
+		// client's own auth/login type (IdC/SSO), not by this response, so it
+		// cannot be suppressed here. Leaving subscriptionManagementTarget as-is.
+	}
+
+	// Top-level reset date drives the "resets on <date>" header. Align it with
+	// the API key's own 30-day billing cycle instead of the pool account's.
+	if _, has := m["nextDateReset"]; has {
+		m["nextDateReset"] = keyReset
+	}
+
 	out, err := json.Marshal(m)
 	if err != nil {
 		return false
@@ -351,6 +465,23 @@ func (s *Server) rewriteUsageResponse(w http.ResponseWriter, resp *http.Response
 	w.WriteHeader(resp.StatusCode)
 	w.Write(out)
 	return true
+}
+// keyResetUnix computes the next credit-reset timestamp for an API key.
+// Credits reset on a rolling 30-day cycle anchored to the key's creation date;
+// the returned value is the next cycle boundary at or after now (unix seconds).
+func keyResetUnix(k config.APIKey) int64 {
+	const period = int64(30 * 24 * 3600)
+	created := k.CreatedUnix
+	if created <= 0 {
+		created = time.Now().Unix()
+	}
+	now := time.Now().Unix()
+	reset := created
+	if reset <= now {
+		cycles := (now-created)/period + 1
+		reset = created + cycles*period
+	}
+	return reset
 }
 
 func truncate(s string, maxLen int) string {

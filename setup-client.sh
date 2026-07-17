@@ -1,12 +1,12 @@
 #!/bin/bash
-# setup-client.sh — Zero-login client setup for Kiro CLI Pool Proxy.
+# setup-client.sh — Zero-login client setup for Kiro CLI Pool Proxy (Linux + macOS).
 #
 # Bản chất của pool: máy khách KHÔNG cần login. Nó chỉ cần:
 #   1) trỏ endpoint kiro-cli vào proxy
 #   2) có 1 token "giả" trong data.sqlite3 để qua cổng login local
 # Proxy sẽ ghi đè Authorization bằng account thật trong pool → chat chạy bình thường.
 #
-# Verified (RE kiro-cli 2.12.2): cổng login chỉ check sự tồn tại của
+# Verified (RE kiro-cli): cổng login chỉ check sự tồn tại của
 # `kirocli:odic:token` chưa hết hạn trong bảng `auth_kv`; access/refresh token
 # KHÔNG cần thật vì proxy swap. expiry xa (2099) nên CLI không refresh.
 #
@@ -15,7 +15,12 @@
 set -euo pipefail
 
 KIRO="${KIRO_CLI:-kiro-cli}"
-DB="${HOME}/.local/share/kiro-cli/data.sqlite3"
+
+# Resolve the kiro-cli data dir per-OS (directories crate conventions).
+case "$(uname -s)" in
+    Darwin) DB="${KIRO_DATA_DIR:-$HOME/Library/Application Support/kiro-cli}/data.sqlite3" ;;
+    *)      DB="${KIRO_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/kiro-cli}/data.sqlite3" ;;
+esac
 
 command -v "$KIRO" >/dev/null 2>&1 || { echo "❌ kiro-cli not found (set KIRO_CLI=/path)"; exit 1; }
 
@@ -29,8 +34,8 @@ fi
 
 PROXY="${1:-}"
 REGION="${2:-us-east-1}"
-# Optional API key: nếu proxy bật requireApiKey, truyền key vào đây. Key được seed
-# làm Bearer token; proxy validate rồi mới swap sang account pool.
+# Optional API key: proxy bắt buộc API key. Key được seed làm Bearer token;
+# proxy validate rồi mới swap sang account pool.
 APIKEY="${3:-POOL_PLACEHOLDER}"
 if [ -z "$PROXY" ]; then
     echo "Usage: $0 http://PROXY_IP:9999 [region] [api_key]"; echo "       $0 --reset"; exit 1

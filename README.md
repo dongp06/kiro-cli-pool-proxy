@@ -73,6 +73,92 @@ kiro-cli chat
 
 Khôi phục về mặc định: `./set-endpoints.sh --reset`
 
+## Dùng Claude Code CLI / opencode (Anthropic API)
+
+Ngoài kiro-cli gốc, proxy còn expose endpoint **Anthropic Messages API** tương thích
+tại `POST /v1/messages`. Nó dịch Anthropic ↔ Kiro `GenerateAssistantResponse` hai chiều
+(request: messages/system/tools → conversationState; response: event-stream → Anthropic
+SSE), swap account pool và **đếm credit per-key** như kiro-cli.
+
+> Client KHÔNG cần login Kiro, KHÔNG cần account riêng. Chỉ cần 1 API key của pool
+> (`kpp_...`) làm khóa xác thực. Proxy tự swap sang account thật.
+
+### Claude Code CLI
+
+```bash
+export ANTHROPIC_BASE_URL=http://SERVER_IP:9999
+export ANTHROPIC_API_KEY=kpp_xxxxxxxxxxxxxxxx   # API key tạo trong admin panel
+claude
+```
+
+Claude Code sẽ gọi `http://SERVER_IP:9999/v1/messages` (gửi key qua header `x-api-key`).
+
+### opencode
+
+opencode hỗ trợ provider Anthropic-compatible. Trỏ baseURL vào proxy trong config
+(`~/.config/opencode/opencode.json` hoặc `opencode.json` trong project):
+
+```json
+{
+  "provider": {
+    "kiro-pool": {
+      "npm": "@ai-sdk/anthropic",
+      "options": {
+        "baseURL": "http://SERVER_IP:9999/v1",
+        "apiKey": "kpp_xxxxxxxxxxxxxxxx"
+      },
+      "models": { "claude-3-5-sonnet": { "name": "Kiro Pool (Sonnet)" } }
+    }
+  }
+}
+```
+
+Rồi chọn model `kiro-pool/claude-3-5-sonnet` trong opencode.
+
+### Ghi chú
+
+- **Model mapping**: mặc định mọi model Anthropic → Kiro `modelId: "auto"` (server tự
+  chọn model mạnh nhất account có). Ép model khác qua env `KPP_KIRO_MODEL`.
+- **Stream + non-stream** đều hỗ trợ (`"stream": true` phát SSE chuẩn Anthropic).
+- **Tool calling**: đã cài đặt (tool_use / tool_result ↔ Kiro toolUses/toolResults) —
+  xác minh với client thực tế đang tiến hành.
+- Credit mỗi request được cộng vào API key tương ứng; hết `creditLimit` → HTTP 402.
+
+## Dùng Codex / client OpenAI (OpenAI Chat Completions API)
+
+Proxy cũng expose endpoint **OpenAI Chat Completions** tại `POST /v1/chat/completions`
+(+ `/v1/models` stub). Dịch OpenAI ↔ Kiro, swap account pool, đếm credit per-key.
+
+### Codex CLI / client OpenAI
+
+```bash
+export OPENAI_BASE_URL=http://SERVER_IP:9999/v1
+export OPENAI_API_KEY=kpp_xxxxxxxxxxxxxxxx
+codex
+```
+
+Client gọi `http://SERVER_IP:9999/v1/chat/completions` (key qua `Authorization: Bearer`).
+
+### opencode (provider OpenAI-compatible)
+
+```json
+{
+  "provider": {
+    "kiro-pool-oai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://SERVER_IP:9999/v1",
+        "apiKey": "kpp_xxxxxxxxxxxxxxxx"
+      },
+      "models": { "kiro-auto": { "name": "Kiro Pool (auto)" } }
+    }
+  }
+}
+```
+
+Hỗ trợ cả `stream: true` (phát `chat.completion.chunk` + `data: [DONE]`) lẫn non-stream.
+Tool calling (`tools`/`tool_calls`/`role:tool`) đã map sang Kiro toolUses/toolResults.
+
 ## Web Admin Panel
 
 Mở `http://localhost:9999/admin` để quản lý qua giao diện (dark dashboard):
