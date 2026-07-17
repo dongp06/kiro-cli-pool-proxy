@@ -50,9 +50,12 @@ func FetchUsageLimits(acc *config.Account) (*UsageLimitsResponse, error) {
 		return nil, fmt.Errorf("profileArn required for GetUsageLimits")
 	}
 
-	region := acc.Region
+	// The control-plane region must match the PROFILE's region (from the ARN),
+	// not the token's region — a token issued in eu-central-1 can own a profile
+	// in us-east-1, and GetUsageLimits on the wrong region returns "Invalid token".
+	region := regionFromArn(arn)
 	if region == "" {
-		region = regionFromArn(arn)
+		region = acc.Region
 	}
 	if region == "" {
 		region = "us-east-1"
@@ -160,9 +163,15 @@ func pickAgenticBreakdown(r *UsageLimitsResponse) (limit, current float64, unit 
 	if r == nil || len(r.UsageBreakdownList) == 0 {
 		return 0, 0, ""
 	}
-	for _, b := range r.UsageBreakdownList {
-		if strings.EqualFold(b.ResourceType, "AGENTIC_REQUEST") {
-			return b.UsageLimit, b.CurrentUsage, b.Unit
+	// Live GetUsageLimits (KIRO POWER plan) returns resourceType="CREDIT" with
+	// currentUsage/usageLimit as the chat request quota (e.g. 5998/10000).
+	// "AGENTIC_REQUEST" is also a valid ResourceType enum value on other plans.
+	// Prefer either, then fall back to the first breakdown entry.
+	for _, want := range []string{"CREDIT", "AGENTIC_REQUEST"} {
+		for _, b := range r.UsageBreakdownList {
+			if strings.EqualFold(b.ResourceType, want) {
+				return b.UsageLimit, b.CurrentUsage, b.Unit
+			}
 		}
 	}
 	b := r.UsageBreakdownList[0]

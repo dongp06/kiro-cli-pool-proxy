@@ -8,6 +8,8 @@ import (
 	"kiro-cli-pool-proxy/pool"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -62,6 +64,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/health" {
 		w.WriteHeader(200)
 		io.WriteString(w, "ok")
+		return
+	}
+
+	// Zero-login client bootstrap: `curl -fsSL http://PROXY/setup-client.sh | bash -s -- http://PROXY REGION`
+	if r.Method == http.MethodGet && r.URL.Path == "/setup-client.sh" {
+		if data, ok := readSetupClientScript(); ok {
+			w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+			w.Write(data)
+		} else {
+			http.Error(w, "setup-client.sh not found on server", http.StatusNotFound)
+		}
 		return
 	}
 
@@ -249,4 +262,19 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// readSetupClientScript locates setup-client.sh next to the executable or in the
+// current working directory and returns its contents.
+func readSetupClientScript() ([]byte, bool) {
+	candidates := []string{"setup-client.sh"}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "setup-client.sh"))
+	}
+	for _, p := range candidates {
+		if data, err := os.ReadFile(p); err == nil {
+			return data, true
+		}
+	}
+	return nil, false
 }
