@@ -10,7 +10,7 @@
 # `kirocli:odic:token` chưa hết hạn trong bảng `auth_kv`; access/refresh token
 # KHÔNG cần thật vì proxy swap. expiry xa (2099) nên CLI không refresh.
 #
-# Usage:  ./setup-client.sh http://PROXY_IP:9999 [region]
+# Usage:  ./setup-client.sh http://PROXY_IP:9999 [region] [api_key]
 # Reset:  ./setup-client.sh --reset
 set -euo pipefail
 
@@ -29,8 +29,11 @@ fi
 
 PROXY="${1:-}"
 REGION="${2:-us-east-1}"
+# Optional API key: nếu proxy bật requireApiKey, truyền key vào đây. Key được seed
+# làm Bearer token; proxy validate rồi mới swap sang account pool.
+APIKEY="${3:-POOL_PLACEHOLDER}"
 if [ -z "$PROXY" ]; then
-    echo "Usage: $0 http://PROXY_IP:9999 [region]"; echo "       $0 --reset"; exit 1
+    echo "Usage: $0 http://PROXY_IP:9999 [region] [api_key]"; echo "       $0 --reset"; exit 1
 fi
 
 VAL="{\"endpoint\":\"$PROXY\",\"region\":\"$REGION\"}"
@@ -46,8 +49,8 @@ if [ ! -f "$DB" ]; then
     echo "❌ Không tìm thấy $DB (kiro-cli chưa khởi tạo). Chạy 'kiro-cli settings all' rồi thử lại."; exit 1
 fi
 
-echo "[2/3] Seed token giả vào auth_kv (bỏ qua login)"
-TOKEN_JSON='{"access_token":"POOL_PLACEHOLDER","refresh_token":"POOL_PLACEHOLDER","expires_at":"2099-01-01T00:00:00Z","region":"'"$REGION"'","start_url":"https://pool.local/start","scopes":["codewhisperer:completions","codewhisperer:analysis","codewhisperer:conversations"],"oauth_flow":"DeviceCode"}'
+echo "[2/3] Seed token vào auth_kv (bỏ qua login)"
+TOKEN_JSON='{"access_token":"'"$APIKEY"'","refresh_token":"'"$APIKEY"'","expires_at":"2099-01-01T00:00:00Z","region":"'"$REGION"'","start_url":"https://pool.local/start","scopes":["codewhisperer:completions","codewhisperer:analysis","codewhisperer:conversations"],"oauth_flow":"DeviceCode"}'
 REG_JSON='{"client_id":"pool","client_secret":"pool","client_secret_expires_at":"2099-01-01T00:00:00Z","region":"'"$REGION"'","scopes":["codewhisperer:completions","codewhisperer:analysis","codewhisperer:conversations"],"oauth_flow":"DeviceCode"}'
 
 seed_with_python() {

@@ -167,20 +167,73 @@ func (a *AdminHandler) serveAPI(w http.ResponseWriter, r *http.Request, route st
 
 	case route == "settings" && r.Method == http.MethodGet:
 		writeJSON(w, 200, map[string]any{
-			"strategy":   a.cfg.GetStrategy(),
-			"listenAddr": a.cfg.GetListenAddr(),
+			"strategy":      a.cfg.GetStrategy(),
+			"listenAddr":    a.cfg.GetListenAddr(),
+			"requireApiKey": a.cfg.GetRequireAPIKey(),
 		})
 
 	case route == "settings" && r.Method == http.MethodPatch:
 		var body struct {
-			Strategy string `json:"strategy"`
+			Strategy      string `json:"strategy"`
+			RequireApiKey *bool  `json:"requireApiKey"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		if body.Strategy == "round-robin" || body.Strategy == "smart" {
 			a.cfg.SetStrategy(body.Strategy)
-			a.cfg.Save()
 		}
-		writeJSON(w, 200, map[string]string{"strategy": a.cfg.GetStrategy()})
+		if body.RequireApiKey != nil {
+			a.cfg.SetRequireAPIKey(*body.RequireApiKey)
+		}
+		a.cfg.Save()
+		writeJSON(w, 200, map[string]any{
+			"strategy":      a.cfg.GetStrategy(),
+			"requireApiKey": a.cfg.GetRequireAPIKey(),
+		})
+
+	case route == "keys" && r.Method == http.MethodGet:
+		writeJSON(w, 200, a.cfg.APIKeysSnapshot())
+
+	case route == "keys" && r.Method == http.MethodPost:
+		var body struct {
+			Name        string  `json:"name"`
+			CreditLimit float64 `json:"creditLimit"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		idb := make([]byte, 4)
+		kb := make([]byte, 24)
+		rand.Read(idb)
+		rand.Read(kb)
+		k := config.APIKey{
+			ID:          "key-" + hex.EncodeToString(idb),
+			Name:        strings.TrimSpace(body.Name),
+			Key:         "kpp_" + hex.EncodeToString(kb),
+			Enabled:     true,
+			CreditLimit: body.CreditLimit,
+			CreatedUnix: time.Now().Unix(),
+		}
+		a.cfg.AddAPIKey(k)
+		a.cfg.Save()
+		writeJSON(w, 200, k)
+
+	case strings.HasPrefix(route, "keys/") && r.Method == http.MethodPatch:
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if a.cfg.SetAPIKeyEnabled(strings.TrimPrefix(route, "keys/"), body.Enabled) {
+			a.cfg.Save()
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		} else {
+			writeJSON(w, 404, map[string]string{"error": "not found"})
+		}
+
+	case strings.HasPrefix(route, "keys/") && r.Method == http.MethodDelete:
+		if a.cfg.RemoveAPIKey(strings.TrimPrefix(route, "keys/")) {
+			a.cfg.Save()
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		} else {
+			writeJSON(w, 404, map[string]string{"error": "not found"})
+		}
 
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})

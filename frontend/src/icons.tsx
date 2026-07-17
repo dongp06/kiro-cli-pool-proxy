@@ -75,3 +75,9 @@ export const Chart = (p: P) => (
   <svg {...base(p)}><path d="M3 3v18h18M18 17V9M13 17V5M8 17v-3" /></svg>
 )
 export const X = (p: P) => (<svg {...base(p)}><path d="M18 6 6 18M6 6l12 12" /></svg>)
+export const Key = (p: P) => (
+  <svg {...base(p)}><circle cx="7.5" cy="15.5" r="4.5" /><path d="M10.7 12.3 21 2M17 6l3 3M14 9l3 3" /></svg>
+)
+export const Shield = (p: P) => (
+  <svg {...base(p)}><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z" /></svg>
+)

@@ -87,6 +87,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// API-key auth: kiro-cli sends the seeded token as `Authorization: Bearer <key>`.
+	// Validate it here (before we swap in the pool account's real token).
+	var apiKeyID string
+	if s.cfg.GetRequireAPIKey() {
+		bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		id, ok := s.cfg.ValidateAPIKey(bearer)
+		if !ok {
+			http.Error(w, "invalid or missing API key", http.StatusUnauthorized)
+			return
+		}
+		if s.cfg.APIKeyOverCredit(id) {
+			http.Error(w, "API key credit limit reached", http.StatusPaymentRequired)
+			return
+		}
+		apiKeyID = id
+	}
+
 	// Read the request body (the CLI's fully-formed Kiro payload).
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -188,7 +205,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Success. Stream response back verbatim while tee-parsing credits.
 		s.pool.RecordSuccess(account.ID)
-		s.streamResponse(w, resp, account, region, isChat)
+		s.streamResponse(w, resp, account, region, isChat, apiKeyID)
 		return
 	}
 
@@ -197,7 +214,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // streamResponse copies upstream → client byte-for-byte, tee-parsing credit
 // usage from meteringEvent frames (only for chat/streaming responses).
-func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, account *config.Account, region string, isChat bool) {
+func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, account *config.Account, region string, isChat bool, apiKeyID string) {
 	defer resp.Body.Close()
 
 	// Propagate upstream headers + status.
@@ -239,6 +256,9 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 		// invocation. The 5-min GetUsageLimits poll re-syncs the true value.
 		s.cfg.RecordUsage(account.ID, sink.Credits) // Credits + Requests++
 		s.cfg.UpdateQuotaCurrentDelta(account.ID, 1) // one invocation
+		if apiKeyID != "" {
+			s.cfg.RecordKeyUsage(apiKeyID, sink.Credits)
+		}
 
 		acctLabel := account.Email
 		if acctLabel == "" {

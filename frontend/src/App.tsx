@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, Unauthorized, type Account, type Overview } from './api'
+import { api, Unauthorized, type Account, type ApiKey, type Overview } from './api'
 import * as I from './icons'
 
 /* ---------- helpers ---------- */
@@ -264,7 +264,7 @@ function Dashboard(props: {
         {tab === 'settings' && (
           <SettingsTab
             strategy={ov?.strategy || 'smart'} onStrategy={setStrategy}
-            listenAddr={listenAddr} theme={theme}
+            listenAddr={listenAddr} theme={theme} toast={toast}
             refreshSec={refreshMs / 1000}
             onRefresh={(v) => { setRefreshMs(v * 1000); localStorage.setItem('kpp_refresh', String(v)) }} />
         )}
@@ -404,12 +404,14 @@ function ConnectTab({ url, region, toast }: { url: string; region: string; toast
 }
 
 /* ---------- Settings tab ---------- */
-function SettingsTab({ strategy, onStrategy, listenAddr, theme, refreshSec, onRefresh }: {
+function SettingsTab({ strategy, onStrategy, listenAddr, theme, refreshSec, onRefresh, toast }: {
   strategy: string; onStrategy: (s: string) => void; listenAddr: string
   theme: ReturnType<typeof useTheme>; refreshSec: number; onRefresh: (v: number) => void
+  toast: (m: string, e?: boolean) => void
 }) {
   return (
     <>
+      <ApiKeysCard toast={toast} />
       <div className={cls.card}>
         <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border)]"><span className="font-bold text-[15px] flex items-center gap-2.5"><span className="text-[var(--brand)] text-[17px]"><I.Gear /></span> Chiến lược xoay account</span></div>
         <div className="p-5">
@@ -527,5 +529,100 @@ function ImportModal({ region, onClose, onDone, toast }: { region: string; onClo
         <button className={`${cls.btn} ${cls.btnPrimary}`} onClick={submit}>Import</button>
       </div>
     </Modal>
+  )
+}
+
+/* ---------- API Keys card ---------- */
+function ApiKeysCard({ toast }: { toast: (m: string, e?: boolean) => void }) {
+  const [require, setRequire] = useState(false)
+  const [keys, setKeys] = useState<ApiKey[]>([])
+  const [name, setName] = useState('')
+  const [limit, setLimit] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      const [s, k] = await Promise.all([api.settings(), api.keys()])
+      setRequire(s.requireApiKey)
+      setKeys(k)
+    } catch { /* ignore */ }
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const toggleRequire = async (v: boolean) => { setRequire(v); await api.setRequireApiKey(v); toast(v ? 'Đã bật yêu cầu API key' : 'Đã tắt yêu cầu API key') }
+  const create = async () => {
+    const k = await api.createKey(name.trim(), parseFloat(limit) || 0)
+    setName(''); setLimit('')
+    toast('Đã tạo key: ' + k.key)
+    navigator.clipboard.writeText(k.key).catch(() => {})
+    load()
+  }
+  const toggle = async (k: ApiKey) => { await api.toggleKey(k.id, !k.enabled); toast(k.enabled ? 'Đã tắt key' : 'Đã bật key'); load() }
+  const del = async (k: ApiKey) => { if (confirm('Xóa key ' + (k.name || k.id) + ' ?')) { await api.deleteKey(k.id); toast('Đã xóa key'); load() } }
+
+  return (
+    <div className={cls.card}>
+      <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border)] flex-wrap">
+        <span className="font-bold text-[15px] flex items-center gap-2.5"><span className="text-[var(--brand)] text-[17px]"><I.Key /></span> API Keys</span>
+        <label className="ml-auto flex items-center gap-2 cursor-pointer select-none text-[13px]">
+          <span className="text-[var(--muted)]">Yêu cầu API key</span>
+          <span className="relative inline-block w-10 h-[22px]">
+            <input type="checkbox" className="peer sr-only" checked={require} onChange={(e) => toggleRequire(e.target.checked)} />
+            <span className="absolute inset-0 rounded-full bg-[var(--panel3)] peer-checked:bg-[var(--brand)] transition-colors" />
+            <span className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white transition-transform peer-checked:translate-x-[18px]" />
+          </span>
+        </label>
+      </div>
+      <div className="p-5">
+        <p className="text-[var(--muted)] mt-0 mb-3 text-[13px]">
+          {require
+            ? <>Bật: client phải seed API key làm token. Dùng <span className="font-mono">setup-client.sh URL REGION KEY</span>.</>
+            : <>Tắt: endpoint mở, ai cũng dùng được. Bật để bảo vệ + giới hạn credit từng key (như Kiro-Go).</>}
+        </p>
+
+        <div className="flex gap-2 flex-wrap items-end mb-4">
+          <div className="flex-1 min-w-[160px]"><label className={cls.label}>Tên key</label>
+            <input className={cls.input} placeholder="vd: máy-của-A" value={name} onChange={(e) => setName(e.target.value)} /></div>
+          <div className="w-40"><label className={cls.label}>Credit limit (0 = ∞)</label>
+            <input className={cls.input} type="number" min="0" step="0.01" placeholder="0" value={limit} onChange={(e) => setLimit(e.target.value)} /></div>
+          <button className={`${cls.btn} ${cls.btnPrimary}`} onClick={create}><I.Plus /> Tạo key</button>
+        </div>
+
+        {keys.length === 0 ? (
+          <div className="text-center py-6 text-[var(--muted)] text-[13px]">Chưa có API key.</div>
+        ) : (
+          <div className="flex flex-col gap-2.5">
+            {keys.map((k) => {
+              const pct = k.creditLimit > 0 ? Math.min(100, Math.round((k.credits / k.creditLimit) * 100)) : 0
+              const hot = pct >= 85
+              return (
+                <div key={k.id} className={`rounded-xl border border-[var(--border)] bg-[var(--panel2)] p-3.5 ${k.enabled ? '' : 'opacity-60'}`}>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <span className="font-semibold text-[13.5px]">{k.name || k.id}</span>
+                    {k.enabled
+                      ? <span className="px-2 py-0.5 rounded-full text-[10.5px] font-bold text-[var(--ok)] bg-[rgba(52,211,153,.14)]">enabled</span>
+                      : <span className="px-2 py-0.5 rounded-full text-[10.5px] font-bold text-[var(--muted)] bg-[rgba(139,152,169,.14)]">disabled</span>}
+                    <div className="ml-auto flex gap-2">
+                      <button className={`${cls.btn} ${cls.sm}`} onClick={() => { navigator.clipboard.writeText(k.key); toast('Đã copy key') }}><I.Copy /> Copy</button>
+                      <button className={`${cls.btn} ${cls.sm}`} onClick={() => toggle(k)}><I.Power /> {k.enabled ? 'Tắt' : 'Bật'}</button>
+                      <button className={`${cls.btn} ${cls.btnDanger} ${cls.sm}`} onClick={() => del(k)}><I.Trash /></button>
+                    </div>
+                  </div>
+                  <div className="font-mono text-[11.5px] text-[var(--faint)] break-all mt-1.5">{k.key}</div>
+                  <div className="flex justify-between text-[11.5px] text-[var(--muted)] mt-2 mb-1">
+                    <span>Credits: <b className="text-[var(--text)]">{fmtNum(k.credits)}</b>{k.creditLimit > 0 ? <> / {fmtNum(k.creditLimit)}</> : ' (∞)'}</span>
+                    <span>{fmtNum(k.requests)} req · {fmtTime(k.lastUsedUnix)}</span>
+                  </div>
+                  {k.creditLimit > 0 && (
+                    <div className="h-[6px] rounded bg-[var(--panel3)] overflow-hidden">
+                      <div className="h-full rounded" style={{ width: pct + '%', background: hot ? 'linear-gradient(90deg,var(--warn),var(--danger))' : 'linear-gradient(90deg,var(--brand),var(--accent))' }} />
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
