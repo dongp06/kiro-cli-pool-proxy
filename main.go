@@ -85,6 +85,8 @@ func main() {
 	log.Printf("║   kiro-cli settings api.cps.service \\                        ║")
 	log.Printf("║     '{\"endpoint\":\"%s\",\"region\":\"us-east-1\"}'  ", proxyURL)
 	log.Printf("║   (or run ./set-endpoints.sh %s )      ", proxyURL)
+	log.Printf("╠══════════════════════════════════════════════════════════════╣")
+	log.Printf("║   Admin panel: %s/admin", proxyURL)
 	log.Printf("╚══════════════════════════════════════════════════════════════╝")
 
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {

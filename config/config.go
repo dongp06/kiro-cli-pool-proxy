@@ -47,6 +47,9 @@ type Config struct {
 	// Instead an optional shared secret header (X-Pool-Key) guards the proxy.
 	PoolKey string `json:"poolKey,omitempty"`
 
+	// AdminPassword protects the /admin web panel. Empty = no auth (localhost only).
+	AdminPassword string `json:"adminPassword,omitempty"`
+
 	Accounts []Account `json:"accounts"`
 
 	mu   sync.RWMutex
@@ -195,4 +198,71 @@ func (c *Config) UsageSnapshot() []Account {
 	out := make([]Account, len(c.Accounts))
 	copy(out, c.Accounts)
 	return out
+}
+
+// AddAccount appends a new account (or replaces one with the same ID).
+func (c *Config) AddAccount(acc Account) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.Accounts {
+		if c.Accounts[i].ID == acc.ID {
+			c.Accounts[i] = acc
+			return
+		}
+	}
+	c.Accounts = append(c.Accounts, acc)
+}
+
+// RemoveAccount deletes an account by ID. Returns true if removed.
+func (c *Config) RemoveAccount(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.Accounts {
+		if c.Accounts[i].ID == id {
+			c.Accounts = append(c.Accounts[:i], c.Accounts[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// SetAccountEnabled toggles an account's enabled flag.
+func (c *Config) SetAccountEnabled(id string, enabled bool) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.Accounts {
+		if c.Accounts[i].ID == id {
+			c.Accounts[i].Enabled = enabled
+			return true
+		}
+	}
+	return false
+}
+
+// GetStrategy returns the current selection strategy.
+func (c *Config) GetStrategy() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Strategy
+}
+
+// SetStrategy updates the selection strategy.
+func (c *Config) SetStrategy(s string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Strategy = s
+}
+
+// GetListenAddr returns the configured listen address.
+func (c *Config) GetListenAddr() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ListenAddr
+}
+
+// GetAdminPassword returns the admin panel password (empty = no auth).
+func (c *Config) GetAdminPassword() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AdminPassword
 }

@@ -27,13 +27,15 @@ type Server struct {
 	pool   *pool.Pool
 	cfg    *config.Config
 	client *http.Client
+	admin  *AdminHandler
 }
 
 // NewServer creates a plain reverse-proxy server.
 func NewServer(cfg *config.Config, p *pool.Pool) *Server {
 	return &Server{
-		pool: p,
-		cfg:  cfg,
+		pool:  p,
+		cfg:   cfg,
+		admin: NewAdminHandler(cfg, p),
 		client: &http.Client{
 			Timeout: 10 * time.Minute,
 			Transport: &http.Transport{
@@ -51,6 +53,12 @@ func NewServer(cfg *config.Config, p *pool.Pool) *Server {
 
 // ServeHTTP handles every proxied Kiro request.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Admin web panel + API.
+	if r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/") {
+		s.admin.ServeHTTP(w, r)
+		return
+	}
+
 	if r.Method == http.MethodGet && r.URL.Path == "/health" {
 		w.WriteHeader(200)
 		io.WriteString(w, "ok")

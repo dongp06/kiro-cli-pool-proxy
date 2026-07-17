@@ -73,6 +73,26 @@ kiro-cli chat
 
 Khôi phục về mặc định: `./set-endpoints.sh --reset`
 
+## Web Admin Panel
+
+Mở `http://localhost:9999/admin` để quản lý qua giao diện (dark dashboard):
+
+- **KPI cards**: tổng accounts, requests, credits, quota
+- **Bảng accounts**: quota bar (invocations), credits, requests, status, bật/tắt/xóa
+- **Thêm account**: form theo auth method (idc/social/external_idp/api_key)
+- **Import từ kiro-cli**: đọc SQLite local 1 click
+- **Connection helper**: copy lệnh `settings` để trỏ kiro-cli vào proxy
+- **Strategy selector**: đổi round-robin ↔ smart
+
+Bảo vệ admin bằng mật khẩu (config `adminPassword`):
+
+```json
+{ "adminPassword": "your-secure-password" }
+```
+
+Để trống = không auth (chỉ nên dùng khi bind 127.0.0.1). Account tokens **không bao giờ**
+được trả về UI (đã sanitize).
+
 ## Chạy proxy trên máy khác (remote)
 
 Vì đây là plain HTTP proxy (không MITM), chạy remote rất đơn giản:

@@ -107,6 +107,23 @@ func (p *Pool) RecordSuccess(id string) {
 	delete(p.cooldowns, id)
 }
 
+// Reload clears transient runtime state after the account list changes.
+// Account data is read live from config, so this only resets cooldowns for
+// accounts that no longer exist and is safe to call after add/remove/toggle.
+func (p *Pool) Reload() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	valid := make(map[string]bool)
+	for i := range p.cfg.Accounts {
+		valid[p.cfg.Accounts[i].ID] = true
+	}
+	for id := range p.cooldowns {
+		if !valid[id] {
+			delete(p.cooldowns, id)
+		}
+	}
+}
+
 // RecordFailure applies cooldown based on HTTP status.
 func (p *Pool) RecordFailure(id string, statusCode int, errText string) {
 	p.mu.Lock()
