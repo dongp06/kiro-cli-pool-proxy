@@ -1,6 +1,6 @@
 package proxy
 
-import _ "embed"
+import "embed"
 
-//go:embed web/index.html
-var adminHTML string
+//go:embed all:webdist
+var adminDist embed.FS

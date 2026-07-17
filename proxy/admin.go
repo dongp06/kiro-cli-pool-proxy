@@ -5,19 +5,23 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"kiro-cli-pool-proxy/config"
 	"kiro-cli-pool-proxy/kirolocal"
 	"kiro-cli-pool-proxy/pool"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
-// AdminHandler serves the web admin panel (API + embedded SPA).
+// AdminHandler serves the web admin panel (API + embedded static assets).
 type AdminHandler struct {
 	cfg  *config.Config
 	pool *pool.Pool
+	dist fs.FS // built frontend (proxy/webdist)
 
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
@@ -25,7 +29,8 @@ type AdminHandler struct {
 
 // NewAdminHandler creates the admin panel handler.
 func NewAdminHandler(cfg *config.Config, p *pool.Pool) *AdminHandler {
-	a := &AdminHandler{cfg: cfg, pool: p, sessions: make(map[string]time.Time)}
+	sub, _ := fs.Sub(adminDist, "webdist")
+	a := &AdminHandler{cfg: cfg, pool: p, dist: sub, sessions: make(map[string]time.Time)}
 	go a.gcSessions()
 	return a
 }
@@ -88,9 +93,20 @@ func (a *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// SPA (any /admin or /admin/... path serves the app)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(adminHTML))
+	// Static assets from the built frontend (no SPA fallback).
+	rel := strings.TrimPrefix(strings.TrimPrefix(path, "/admin"), "/")
+	if rel == "" {
+		rel = "index.html"
+	}
+	data, err := fs.ReadFile(a.dist, rel)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if ct := mime.TypeByExtension(filepath.Ext(rel)); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.Write(data)
 }
 
 func (a *AdminHandler) serveAPI(w http.ResponseWriter, r *http.Request, route string) {
