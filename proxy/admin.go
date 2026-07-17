@@ -167,28 +167,20 @@ func (a *AdminHandler) serveAPI(w http.ResponseWriter, r *http.Request, route st
 
 	case route == "settings" && r.Method == http.MethodGet:
 		writeJSON(w, 200, map[string]any{
-			"strategy":      a.cfg.GetStrategy(),
-			"listenAddr":    a.cfg.GetListenAddr(),
-			"requireApiKey": a.cfg.GetRequireAPIKey(),
+			"strategy":   a.cfg.GetStrategy(),
+			"listenAddr": a.cfg.GetListenAddr(),
 		})
 
 	case route == "settings" && r.Method == http.MethodPatch:
 		var body struct {
-			Strategy      string `json:"strategy"`
-			RequireApiKey *bool  `json:"requireApiKey"`
+			Strategy string `json:"strategy"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		if body.Strategy == "round-robin" || body.Strategy == "smart" {
 			a.cfg.SetStrategy(body.Strategy)
 		}
-		if body.RequireApiKey != nil {
-			a.cfg.SetRequireAPIKey(*body.RequireApiKey)
-		}
 		a.cfg.Save()
-		writeJSON(w, 200, map[string]any{
-			"strategy":      a.cfg.GetStrategy(),
-			"requireApiKey": a.cfg.GetRequireAPIKey(),
-		})
+		writeJSON(w, 200, map[string]any{"strategy": a.cfg.GetStrategy()})
 
 	case route == "keys" && r.Method == http.MethodGet:
 		writeJSON(w, 200, a.cfg.APIKeysSnapshot())

@@ -28,7 +28,6 @@ export interface Account {
 export interface Settings {
   strategy: string
   listenAddr: string
-  requireApiKey: boolean
 }
 
 export interface ApiKey {
@@ -70,8 +69,6 @@ export const api = {
   settings: () => req('settings').then((r) => r.json() as Promise<Settings>),
   setStrategy: (strategy: string) =>
     req('settings', { method: 'PATCH', body: JSON.stringify({ strategy }) }),
-  setRequireApiKey: (requireApiKey: boolean) =>
-    req('settings', { method: 'PATCH', body: JSON.stringify({ requireApiKey }) }),
   keys: () => req('keys').then((r) => r.json() as Promise<ApiKey[]>),
   createKey: (name: string, creditLimit: number) =>
     req('keys', { method: 'POST', body: JSON.stringify({ name, creditLimit }) }).then((r) => r.json() as Promise<ApiKey>),

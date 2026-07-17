@@ -51,11 +51,9 @@ type Config struct {
 	// AdminPassword protects the /admin web panel. Empty = no auth (localhost only).
 	AdminPassword string `json:"adminPassword,omitempty"`
 
-	// RequireApiKey, when true, requires clients to present a valid API key as
-	// the Bearer token (Authorization header) — the same token kiro-cli sends.
-	// The proxy validates it, then swaps in the pool account's real token.
-	RequireApiKey bool     `json:"requireApiKey,omitempty"`
-	ApiKeys       []APIKey `json:"apiKeys,omitempty"`
+	// API key is mandatory. Clients present a key as the Bearer token; the proxy
+	// validates it, then swaps in the pool account's real token.
+	ApiKeys []APIKey `json:"apiKeys,omitempty"`
 
 	Accounts []Account `json:"accounts"`
 
@@ -300,18 +298,16 @@ func (c *Config) APIKeyOverCredit(id string) bool {
 	return false
 }
 
-// GetRequireAPIKey reports whether API-key auth is enforced.
-func (c *Config) GetRequireAPIKey() bool {
+// GetAPIKey returns a copy of the key by ID.
+func (c *Config) GetAPIKey(id string) (APIKey, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.RequireApiKey
-}
-
-// SetRequireAPIKey toggles API-key enforcement.
-func (c *Config) SetRequireAPIKey(v bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.RequireApiKey = v
+	for i := range c.ApiKeys {
+		if c.ApiKeys[i].ID == id {
+			return c.ApiKeys[i], true
+		}
+	}
+	return APIKey{}, false
 }
 
 // APIKeysSnapshot returns a copy of all API keys.

@@ -325,3 +325,80 @@ value {"access_token":"POOL_PLACEHOLDER","refresh_token":"POOL_PLACEHOLDER",
 Đã đóng gói trong `setup-client.sh` (đã test: HOME sạch + không login → chat OK,
 credit đếm khớp qua proxy). Settings kiro-cli nằm ở `~/.kiro/settings/cli.json`,
 DB ở `~/.local/share/kiro-cli/data.sqlite3`.
+
+---
+
+## Chat wire protocol — GenerateAssistantResponse (full, capture 2026-07-17)
+
+> Ground truth: bắt request thật tại proxy (kiro-cli 2.12.2, model claude-opus-4.8)
+> + decode response AWS Event Stream. Chat V3 do tui.js dựng, gửi tới
+> `runtime.*.kiro.dev`, `x-amz-target: AmazonCodeWhispererStreamingService.GenerateAssistantResponse`.
+
+### Request body (JSON, ~42KB/turn với tools)
+
+```jsonc
+{
+  "profileArn": "arn:aws:codewhisperer:us-east-1:...:profile/...",
+  "conversationState": {
+    "conversationId": "<uuid>",
+    "history": [
+      { "userInputMessage": { "content": "...", "userInputMessageContext": {...}, "origin": "KIRO_CLI", "modelId": "claude-opus-4.8" } },
+      { "assistantResponseMessage": { ... } }   // xuất hiện ở multi-turn
+    ],
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "",                            // rỗng khi turn này chỉ trả toolResults
+        "origin": "KIRO_CLI",
+        "modelId": "claude-opus-4.8",
+        "userInputMessageContext": {
+          "envState": { "operatingSystem": "linux", "currentWorkingDirectory": "/..." },
+          "toolResults": [
+            { "toolUseId": "<id>", "status": "success", "content": [ { "text": "..." } ] }
+          ],
+          "tools": [
+            { "toolSpecification": {
+                "name": "code",
+                "description": "...",
+                "inputSchema": { "json": { "type": "object", "properties": {...}, "required": [...] } }
+            } }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+Xác nhận từ traffic thật:
+- Top-level chỉ có **`profileArn`** + **`conversationState`** (proxy chỉ cần swap `profileArn`).
+- `origin` = **`KIRO_CLI`**, `modelId` = **`claude-opus-4.8`**. **Không có** `chatTriggerType` trong request CLI.
+- `tools[]` = JSON Schema đầy đủ (turn mẫu có **14 tools**, vd `code`, `fs_read`...); mỗi tool `{name, description, inputSchema.json{type,properties,required}}`.
+- `toolResults[].status`: `success` (enum khác: `error`); `content:[{text}]` (có thể có `json`).
+- `envState`: `operatingSystem`, `currentWorkingDirectory`. History tăng dần mỗi lượt (đây là nguồn context% + credit).
+
+### Response — ChatResponseStream (AWS Event Stream, `:event-type`)
+
+Union event thật quan sát được trong 1 turn có tool-call:
+
+| `:event-type` | Ý nghĩa |
+|---------------|---------|
+| `initial-response` | frame mở đầu của event-stream |
+| `assistantResponseEvent` | delta text trả lời (nhiều frame) |
+| `toolUseEvent` | delta tool call (name/toolUseId/input, nhiều frame ghép lại) |
+| `contextUsageEvent` | `contextUsagePercentage` (context window %) |
+| `metadataEvent` | metadata cuối message (lưu ý tên là `metadataEvent`) |
+| `meteringEvent` | `usage` = credit cumulative (proxy đếm credit) |
+
+- Frame text delta → `assistantResponseEvent`; tool-call delta → `toolUseEvent`
+  (turn không gọi tool sẽ không có `toolUseEvent`).
+- Có thể xuất hiện thêm ở ngữ cảnh khác: `followupPromptEvent`,
+  `codeReferenceEvent`, `supplementaryWebLinksEvent`, `invalidStateEvent`, `error`
+  (không thấy trong turn mẫu). Proxy chỉ parse `meteringEvent` + `contextUsageEvent`.
+
+### Ý nghĩa cho proxy
+
+- Proxy transparent: chỉ thay `profileArn` (body) + `Authorization`/`tokentype` (header),
+  giữ nguyên toàn bộ `conversationState` (history/tools/toolResults do CLI dựng).
+- Credit/turn = `meteringEvent.usage` (last-wins). Context% = `contextUsageEvent`.
+- Không cần hiểu tool protocol để proxy hoạt động — CLI tự quản tool loop; proxy chỉ
+  forward + đếm. (Ghi lại đây để tham chiếu khi cần build client tương thích.)

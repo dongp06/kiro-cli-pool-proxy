@@ -359,7 +359,7 @@ function CodeBlock({ text, toast }: { text: string; toast: (m: string, e?: boole
   )
 }
 function ConnectTab({ url, region, toast }: { url: string; region: string; toast: (m: string, e?: boolean) => void }) {
-  const zero = `curl -fsSL ${url}/setup-client.sh | bash -s -- ${url} ${region}\nkiro-cli chat`
+  const zero = `curl -fsSL ${url}/setup-client.sh | bash -s -- ${url} ${region} <API_KEY>\nkiro-cli chat`
   const manual = `kiro-cli settings api.krs.service '{"endpoint":"${url}","region":"${region}"}'\nkiro-cli settings api.cps.service '{"endpoint":"${url}","region":"${region}"}'`
   const eps: [React.ReactNode, string, string, string][] = [
     [<I.Chat />, 'Chat / Assistant', 'GenerateAssistantResponse', `${url} → runtime.*.kiro.dev`],
@@ -373,9 +373,9 @@ function ConnectTab({ url, region, toast }: { url: string; region: string; toast
         <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border)]"><span className="font-bold text-[15px] flex items-center gap-2.5"><span className="text-[var(--brand)] text-[17px]"><I.Rocket /></span> Máy khách — Zero-login</span></div>
         <div className="p-5">
           <span className="inline-block px-2.5 py-0.5 rounded-md text-[11px] font-bold mb-2 bg-[rgba(52,211,153,.14)] text-[var(--ok)]">Khuyến nghị</span>
-          <p className="text-[var(--muted)] mt-0 mb-3">Máy khách <b className="text-[var(--text)]">không cần login</b>, không cần account riêng. Chạy 1 lệnh (cần <span className="font-mono">curl</span> + <span className="font-mono">python3</span>):</p>
+          <p className="text-[var(--muted)] mt-0 mb-3">Máy khách <b className="text-[var(--text)]">không cần login</b>, không cần account riêng — chỉ cần <b className="text-[var(--text)]">API key</b>. Thay <span className="font-mono">&lt;API_KEY&gt;</span> bằng key tạo ở tab Cài đặt (cần <span className="font-mono">curl</span> + <span className="font-mono">python3</span>):</p>
           <CodeBlock text={zero} toast={toast} />
-          <p className="text-[var(--muted)] mb-0 mt-3">Xong rồi chạy <span className="font-mono">kiro-cli chat</span>. Proxy tự thay account pool + đếm credit/quota.</p>
+          <p className="text-[var(--muted)] mb-0 mt-3">Xong rồi chạy <span className="font-mono">kiro-cli chat</span>. Proxy validate key → thay account pool → đếm credit theo key.</p>
         </div>
       </div>
       <div className={cls.card}>
@@ -534,21 +534,17 @@ function ImportModal({ region, onClose, onDone, toast }: { region: string; onClo
 
 /* ---------- API Keys card ---------- */
 function ApiKeysCard({ toast }: { toast: (m: string, e?: boolean) => void }) {
-  const [require, setRequire] = useState(false)
   const [keys, setKeys] = useState<ApiKey[]>([])
   const [name, setName] = useState('')
   const [limit, setLimit] = useState('')
 
   const load = useCallback(async () => {
     try {
-      const [s, k] = await Promise.all([api.settings(), api.keys()])
-      setRequire(s.requireApiKey)
-      setKeys(k)
+      setKeys(await api.keys())
     } catch { /* ignore */ }
   }, [])
   useEffect(() => { load() }, [load])
 
-  const toggleRequire = async (v: boolean) => { setRequire(v); await api.setRequireApiKey(v); toast(v ? 'Đã bật yêu cầu API key' : 'Đã tắt yêu cầu API key') }
   const create = async () => {
     const k = await api.createKey(name.trim(), parseFloat(limit) || 0)
     setName(''); setLimit('')
@@ -563,20 +559,12 @@ function ApiKeysCard({ toast }: { toast: (m: string, e?: boolean) => void }) {
     <div className={cls.card}>
       <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border)] flex-wrap">
         <span className="font-bold text-[15px] flex items-center gap-2.5"><span className="text-[var(--brand)] text-[17px]"><I.Key /></span> API Keys</span>
-        <label className="ml-auto flex items-center gap-2 cursor-pointer select-none text-[13px]">
-          <span className="text-[var(--muted)]">Yêu cầu API key</span>
-          <span className="relative inline-block w-10 h-[22px]">
-            <input type="checkbox" className="peer sr-only" checked={require} onChange={(e) => toggleRequire(e.target.checked)} />
-            <span className="absolute inset-0 rounded-full bg-[var(--panel3)] peer-checked:bg-[var(--brand)] transition-colors" />
-            <span className="absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white transition-transform peer-checked:translate-x-[18px]" />
-          </span>
-        </label>
+        <span className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold text-[var(--ok)] bg-[rgba(52,211,153,.14)]"><I.Shield /> Bắt buộc</span>
       </div>
       <div className="p-5">
         <p className="text-[var(--muted)] mt-0 mb-3 text-[13px]">
-          {require
-            ? <>Bật: client phải seed API key làm token. Dùng <span className="font-mono">setup-client.sh URL REGION KEY</span>.</>
-            : <>Tắt: endpoint mở, ai cũng dùng được. Bật để bảo vệ + giới hạn credit từng key (như Kiro-Go).</>}
+          API key <b className="text-[var(--text)]">luôn bắt buộc</b>. Client phải seed key làm token:
+          <span className="font-mono"> setup-client.sh URL REGION KEY</span>. Đặt credit limit để giới hạn từng key (như Kiro-Go).
         </p>
 
         <div className="flex gap-2 flex-wrap items-end mb-4">

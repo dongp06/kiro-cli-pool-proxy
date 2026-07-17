@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"kiro-cli-pool-proxy/auth"
@@ -10,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -87,10 +91,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// API-key auth: kiro-cli sends the seeded token as `Authorization: Bearer <key>`.
-	// Validate it here (before we swap in the pool account's real token).
+	// API key is mandatory: kiro-cli sends the seeded key as
+	// `Authorization: Bearer <key>`. Validate before swapping the pool token.
 	var apiKeyID string
-	if s.cfg.GetRequireAPIKey() {
+	{
 		bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		id, ok := s.cfg.ValidateAPIKey(bearer)
 		if !ok {
@@ -115,6 +119,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	amzTarget := r.Header.Get("X-Amz-Target")
 	isChat := strings.Contains(amzTarget, "GenerateAssistantResponse") ||
 		strings.Contains(amzTarget, "StreamingService")
+	isUsage := strings.Contains(amzTarget, "GetUsageLimits")
 
 	excluded := make(map[string]bool)
 	retryLimit := s.pool.RetryLimit()
@@ -139,6 +144,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Rewrite profileArn in the body for this account.
 		newBody := RewriteProfileArn(body, account.ProfileArn)
+
+		// RE/debug: dump the (pre-swap) chat request body once.
+		if dbg := os.Getenv("KPP_DEBUG_BODY"); dbg != "" && isChat {
+			_ = os.WriteFile(dbg, body, 0600)
+		}
 
 		// Resolve region + upstream host.
 		region := RegionFromProfileArn(account.ProfileArn)
@@ -205,7 +215,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Success. Stream response back verbatim while tee-parsing credits.
 		s.pool.RecordSuccess(account.ID)
-		s.streamResponse(w, resp, account, region, isChat, apiKeyID)
+		s.streamResponse(w, resp, account, region, isChat, isUsage, apiKeyID)
 		return
 	}
 
@@ -214,8 +224,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // streamResponse copies upstream → client byte-for-byte, tee-parsing credit
 // usage from meteringEvent frames (only for chat/streaming responses).
-func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, account *config.Account, region string, isChat bool, apiKeyID string) {
+func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, account *config.Account, region string, isChat, isUsage bool, apiKeyID string) {
 	defer resp.Body.Close()
+
+	// /usage → rewrite GetUsageLimits so the client sees THEIR api-key credit
+	// budget, not the shared pool account's real quota.
+	if isUsage && apiKeyID != "" && resp.StatusCode == 200 {
+		if k, ok := s.cfg.GetAPIKey(apiKeyID); ok && k.CreditLimit > 0 {
+			if s.rewriteUsageResponse(w, resp, k) {
+				return
+			}
+		}
+	}
 
 	// Propagate upstream headers + status.
 	for k, v := range resp.Header {
@@ -274,7 +294,63 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 		}
 		log.Printf("[proxy] OK account=%s region=%s credits=%.4f%s%s",
 			acctLabel, region, sink.Credits, ctxInfo, meterInfo)
+		if os.Getenv("KPP_DEBUG_BODY") != "" && len(sink.Types) > 0 {
+			log.Printf("[re] response event-types: %v", sink.Types)
+		}
 	}
+}
+
+// rewriteUsageResponse rewrites a GetUsageLimits JSON body so the client's
+// /usage shows the API key's own credit budget (credits used / creditLimit)
+// instead of the shared pool account's real quota. Returns true if it handled
+// the response (wrote to w). Falls back (returns false) on any parse issue.
+func (s *Server) rewriteUsageResponse(w http.ResponseWriter, resp *http.Response, k config.APIKey) bool {
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+	body := raw
+	gz := strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip")
+	if gz {
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return false
+		}
+		if body, err = io.ReadAll(zr); err != nil {
+			return false
+		}
+	}
+
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return false
+	}
+	arr, ok := m["usageBreakdownList"].([]any)
+	if !ok {
+		return false
+	}
+	for _, e := range arr {
+		if o, ok := e.(map[string]any); ok {
+			o["currentUsage"] = k.Credits
+			o["usageLimit"] = k.CreditLimit
+			delete(o, "currentOverages")
+			delete(o, "overageCharges")
+		}
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return false
+	}
+
+	// Copy headers, but we send uncompressed JSON with a fresh length.
+	for hk, hv := range resp.Header {
+		w.Header()[hk] = hv
+	}
+	w.Header().Del("Content-Encoding")
+	w.Header().Set("Content-Length", strconv.Itoa(len(out)))
+	w.WriteHeader(resp.StatusCode)
+	w.Write(out)
+	return true
 }
 
 func truncate(s string, maxLen int) string {

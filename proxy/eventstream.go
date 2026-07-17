@@ -38,6 +38,8 @@ type MeteringSink struct {
 	SawContext bool
 	// Frames counts total decoded frames (diagnostics).
 	Frames int
+	// Types records how many frames of each :event-type were seen (RE/debug).
+	Types map[string]int
 }
 
 // Write consumes bytes and parses any complete frames. Always returns len(p), nil.
@@ -95,6 +97,12 @@ func (m *MeteringSink) parseFrames() {
 // handleFrame inspects a single frame's headers and payload.
 func (m *MeteringSink) handleFrame(headers, payload []byte) {
 	eventType := eventTypeFromHeaders(headers)
+	if eventType != "" {
+		if m.Types == nil {
+			m.Types = map[string]int{}
+		}
+		m.Types[eventType]++
+	}
 	switch eventType {
 	case "meteringEvent":
 		if usage, ok := creditFromPayload(payload); ok {
