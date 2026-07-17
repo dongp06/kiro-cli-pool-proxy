@@ -212,18 +212,27 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 
 	// Record usage after the turn.
 	if isChat {
-		if sink.SawMetering {
-			s.cfg.RecordUsage(account.ID, sink.Credits)
-			s.cfg.UpdateQuotaCurrentDelta(account.ID, sink.Credits)
-		} else {
-			s.cfg.RecordUsage(account.ID, 0)
+		// Credits (from meteringEvent) are the cost metric; the quota is measured
+		// in INVOCATIONS (request count) per GetUsageLimits AGENTIC_REQUEST. So
+		// track credits for accounting, but increment the quota counter by 1
+		// invocation. The 5-min GetUsageLimits poll re-syncs the true value.
+		s.cfg.RecordUsage(account.ID, sink.Credits) // Credits + Requests++
+		s.cfg.UpdateQuotaCurrentDelta(account.ID, 1) // one invocation
+
+		acctLabel := account.Email
+		if acctLabel == "" {
+			acctLabel = account.ID
 		}
 		ctxInfo := ""
 		if sink.SawContext {
 			ctxInfo = fmt.Sprintf(" ctx=%.0f%%", sink.ContextPct)
 		}
-		log.Printf("[proxy] OK account=%s region=%s credits=%.4f%s",
-			account.Email, region, sink.Credits, ctxInfo)
+		meterInfo := ""
+		if !sink.SawMetering {
+			meterInfo = " (no meteringEvent)"
+		}
+		log.Printf("[proxy] OK account=%s region=%s credits=%.4f%s%s",
+			acctLabel, region, sink.Credits, ctxInfo, meterInfo)
 	}
 }
 
