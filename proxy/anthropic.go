@@ -365,11 +365,50 @@ func asString(v any) string {
 	return ""
 }
 
-// mapKiroModel maps an Anthropic model id to a Kiro modelId. Kiro accepts
-// "auto" (server picks), which is what the CLI sends and is verified working.
+// kiroModels is the set of modelIds the Kiro backend accepts (from
+// ListAvailableModels). Requests naming one of these pass through verbatim.
+var kiroModels = map[string]bool{
+	"auto": true, "claude-sonnet-5": true,
+	"claude-opus-4.8": true, "claude-opus-4.7": true, "claude-opus-4.6": true, "claude-opus-4.5": true,
+	"claude-sonnet-4.6": true, "claude-sonnet-4.5": true, "claude-sonnet-4": true,
+	"claude-haiku-4.5": true,
+	"gpt-5.6-sol": true, "gpt-5.6-terra": true, "gpt-5.6-luna": true,
+	"deepseek-3.2": true, "minimax-m2.5": true, "minimax-m2.1": true,
+	"glm-5": true, "qwen3-coder-next": true,
+}
+
+// mapKiroModel resolves an incoming (Anthropic/OpenAI) model id to a Kiro
+// modelId. Precedence: KPP_KIRO_MODEL env > exact Kiro id pass-through >
+// family heuristic > "auto" (server picks).
 func mapKiroModel(model string) string {
 	if m := strings.TrimSpace(os.Getenv("KPP_KIRO_MODEL")); m != "" {
 		return m
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "auto"
+	}
+	if kiroModels[model] {
+		return model
+	}
+	lm := strings.ToLower(model)
+	switch {
+	case strings.Contains(lm, "opus"):
+		return "claude-opus-4.8"
+	case strings.Contains(lm, "haiku"):
+		return "claude-haiku-4.5"
+	case strings.Contains(lm, "sonnet"):
+		return "claude-sonnet-4.5"
+	case strings.Contains(lm, "deepseek"):
+		return "deepseek-3.2"
+	case strings.Contains(lm, "qwen"):
+		return "qwen3-coder-next"
+	case strings.Contains(lm, "glm"):
+		return "glm-5"
+	case strings.Contains(lm, "minimax"):
+		return "minimax-m2.5"
+	case strings.HasPrefix(lm, "gpt") || strings.HasPrefix(lm, "o1") || strings.HasPrefix(lm, "o3"):
+		return "gpt-5.6-terra"
 	}
 	return "auto"
 }
