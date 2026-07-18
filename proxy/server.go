@@ -34,14 +34,17 @@ type Server struct {
 	cfg    *config.Config
 	client *http.Client
 	admin  *AdminHandler
+	logs   *LogStore
 }
 
 // NewServer creates a plain reverse-proxy server.
 func NewServer(cfg *config.Config, p *pool.Pool) *Server {
+	logs := NewLogStore(500)
 	return &Server{
 		pool:  p,
 		cfg:   cfg,
-		admin: NewAdminHandler(cfg, p),
+		logs:  logs,
+		admin: NewAdminHandler(cfg, p, logs),
 		client: &http.Client{
 			Timeout: 10 * time.Minute,
 			Transport: &http.Transport{
@@ -115,7 +118,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// API key is mandatory: kiro-cli sends the seeded key as
 	// `Authorization: Bearer <key>`. Validate before swapping the pool token.
-	var apiKeyID string
+	var apiKeyID, keyLabel string
 	{
 		bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		id, ok := s.cfg.ValidateAPIKey(bearer)
@@ -128,6 +131,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		apiKeyID = id
+		keyLabel = id
+		if k, ok := s.cfg.GetAPIKey(id); ok && strings.TrimSpace(k.Name) != "" {
+			keyLabel = k.Name
+		}
 	}
 
 	// Read the request body (the CLI's fully-formed Kiro payload).
@@ -173,6 +180,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for attempt := 0; attempt < retryLimit; attempt++ {
 		account := s.pool.GetNext(excluded)
 		if account == nil {
+			if isChat {
+				s.logs.Add(LogEntry{TimeUnix: time.Now().Unix(), Account: "-", ApiKey: keyLabel, Status: 503, Kind: "chat", Err: "no available accounts in pool"})
+			}
 			http.Error(w, "no available accounts in pool", http.StatusServiceUnavailable)
 			return
 		}
@@ -261,16 +271,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Success. Stream response back verbatim while tee-parsing credits.
 		s.pool.RecordSuccess(account.ID)
-		s.streamResponse(w, resp, account, region, isChat, isUsage, apiKeyID)
+		s.streamResponse(w, resp, account, region, isChat, isUsage, apiKeyID, keyLabel)
 		return
 	}
 
+	if isChat {
+		s.logs.Add(LogEntry{TimeUnix: time.Now().Unix(), Account: "-", ApiKey: keyLabel, Status: 503, Kind: "chat", Err: "all accounts exhausted after retries"})
+	}
 	http.Error(w, "all accounts exhausted after retries", http.StatusServiceUnavailable)
 }
 
 // streamResponse copies upstream → client byte-for-byte, tee-parsing credit
 // usage from meteringEvent frames (only for chat/streaming responses).
-func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, account *config.Account, region string, isChat, isUsage bool, apiKeyID string) {
+func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, account *config.Account, region string, isChat, isUsage bool, apiKeyID, keyLabel string) {
 	defer resp.Body.Close()
 
 	// /usage → rewrite GetUsageLimits so the client sees THEIR api-key credit
@@ -350,6 +363,10 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 		if acctLabel == "" {
 			acctLabel = account.ID
 		}
+		s.logs.Add(LogEntry{
+			TimeUnix: time.Now().Unix(), Account: acctLabel, ApiKey: keyLabel,
+			Status: resp.StatusCode, Credits: sink.Credits, Kind: "chat",
+		})
 		ctxInfo := ""
 		if sink.SawContext {
 			ctxInfo = fmt.Sprintf(" ctx=%.0f%%", sink.ContextPct)

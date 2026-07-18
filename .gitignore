@@ -11,6 +11,10 @@ config.json
 # Certs (if any legacy)
 certs/
 
+# Runtime logs
+run.log
+run.err
+
 # OS/editor
 .DS_Store
 *.swp

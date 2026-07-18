@@ -21,6 +21,7 @@ import (
 type AdminHandler struct {
 	cfg  *config.Config
 	pool *pool.Pool
+	logs *LogStore
 	dist fs.FS // built frontend (proxy/webdist)
 
 	mu       sync.Mutex
@@ -28,9 +29,9 @@ type AdminHandler struct {
 }
 
 // NewAdminHandler creates the admin panel handler.
-func NewAdminHandler(cfg *config.Config, p *pool.Pool) *AdminHandler {
+func NewAdminHandler(cfg *config.Config, p *pool.Pool, logs *LogStore) *AdminHandler {
 	sub, _ := fs.Sub(adminDist, "webdist")
-	a := &AdminHandler{cfg: cfg, pool: p, dist: sub, sessions: make(map[string]time.Time)}
+	a := &AdminHandler{cfg: cfg, pool: p, logs: logs, dist: sub, sessions: make(map[string]time.Time)}
 	go a.gcSessions()
 	return a
 }
@@ -226,6 +227,13 @@ func (a *AdminHandler) serveAPI(w http.ResponseWriter, r *http.Request, route st
 		} else {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
 		}
+
+	case route == "logs" && r.Method == http.MethodGet:
+		writeJSON(w, 200, a.logs.Snapshot())
+
+	case route == "logs" && r.Method == http.MethodDelete:
+		a.logs.Clear()
+		writeJSON(w, 200, map[string]bool{"ok": true})
 
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})

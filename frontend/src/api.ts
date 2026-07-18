@@ -42,6 +42,16 @@ export interface ApiKey {
   lastUsedUnix: number
 }
 
+export interface LogEntry {
+  timeUnix: number
+  account: string
+  apiKey: string
+  status: number
+  credits: number
+  kind: string
+  err?: string
+}
+
 const BASE = '/admin/api/'
 
 export class Unauthorized extends Error {}
@@ -82,4 +92,6 @@ export const api = {
     req('accounts', { method: 'POST', body: JSON.stringify(acc) }),
   importLocal: (body: Record<string, unknown>) =>
     req('accounts/import-local', { method: 'POST', body: JSON.stringify(body) }),
+  logs: () => req('logs').then((r) => r.json() as Promise<LogEntry[]>),
+  clearLogs: () => req('logs', { method: 'DELETE' }),
 }
