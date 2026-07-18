@@ -113,6 +113,7 @@ func (s *Server) serveAnthropic(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, resp.StatusCode, anthErr("api_error", truncate(string(b), 400)))
 		return
 	}
+	s.maybeCapture("oc-anthropic", body, kiroBody, resp)
 
 	if req.Stream {
 		s.streamAnthropic(w, resp, &req, account, apiKeyID)
@@ -123,6 +124,37 @@ func (s *Server) serveAnthropic(w http.ResponseWriter, r *http.Request) {
 
 func anthErr(typ, msg string) map[string]any {
 	return map[string]any{"type": "error", "error": map[string]string{"type": typ, "message": msg}}
+}
+
+// teeCloser tees an upstream body to a capture file and closes both.
+type teeCloser struct {
+	r io.Reader
+	c io.Closer
+	f *os.File
+}
+
+func (t teeCloser) Read(p []byte) (int, error) { return t.r.Read(p) }
+func (t teeCloser) Close() error {
+	if t.f != nil {
+		t.f.Close()
+	}
+	return t.c.Close()
+}
+
+// maybeCapture dumps the incoming request, the translated Kiro body, and tees
+// the raw upstream event-stream to files when KPP_CAPTURE is set. This lets us
+// reverse real client (opencode/Claude Code/Codex) traffic and verify/fix the
+// translation without guessing.
+func (s *Server) maybeCapture(prefix string, incoming, kiroBody []byte, resp *http.Response) {
+	dir := os.Getenv("KPP_CAPTURE")
+	if dir == "" {
+		return
+	}
+	_ = os.WriteFile(dir+"/"+prefix+"-in.json", incoming, 0600)
+	_ = os.WriteFile(dir+"/"+prefix+"-kiro.json", kiroBody, 0600)
+	if f, err := os.Create(dir + "/" + prefix + "-resp.bin"); err == nil {
+		resp.Body = teeCloser{r: io.TeeReader(resp.Body, f), c: resp.Body, f: f}
+	}
 }
 
 // serveAnthropicCountTokens answers POST /v1/messages/count_tokens with an

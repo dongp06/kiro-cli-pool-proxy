@@ -107,6 +107,7 @@ func (s *Server) serveOpenAI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, resp.StatusCode, oaiErr("api_error", truncate(string(b), 400)))
 		return
 	}
+	s.maybeCapture("oc-openai", body, kiroBody, resp)
 
 	if req.Stream {
 		s.streamOpenAI(w, resp, &req, account, apiKeyID)
