@@ -313,6 +313,7 @@ func kiroTools(tools []anthTool) []map[string]any {
 		if schema == nil {
 			schema = map[string]any{"type": "object"}
 		}
+		schema = normalizeToolSchema(schema)
 		out = append(out, map[string]any{
 			"toolSpecification": map[string]any{
 				"name":        t.Name,
@@ -322,6 +323,17 @@ func kiroTools(tools []anthTool) []map[string]any {
 		})
 	}
 	return out
+}
+
+// normalizeToolSchema drops JSON-Schema meta keys that the native kiro-cli does
+// not send (e.g. "$schema"), keeping the tool spec byte-compatible with what the
+// Kiro backend expects from the real client.
+func normalizeToolSchema(schema any) any {
+	if m, ok := schema.(map[string]any); ok {
+		delete(m, "$schema")
+		return m
+	}
+	return schema
 }
 
 // parseBlocks normalizes Anthropic content (string OR []block) into blocks.
@@ -660,6 +672,34 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, resp *http.Response, req
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
 		switch et {
+		case "reasoningContentEvent":
+			var o struct {
+				Text      string `json:"text"`
+				Signature string `json:"signature"`
+			}
+			_ = json.Unmarshal(payload, &o)
+			if o.Text != "" {
+				if openType != "thinking" {
+					closeOpen()
+					openIndex = nextIndex
+					nextIndex++
+					openType = "thinking"
+					sse("content_block_start", map[string]any{
+						"type": "content_block_start", "index": openIndex,
+						"content_block": map[string]any{"type": "thinking", "thinking": ""},
+					})
+				}
+				sse("content_block_delta", map[string]any{
+					"type": "content_block_delta", "index": openIndex,
+					"delta": map[string]any{"type": "thinking_delta", "thinking": o.Text},
+				})
+			}
+			if o.Signature != "" && openType == "thinking" {
+				sse("content_block_delta", map[string]any{
+					"type": "content_block_delta", "index": openIndex,
+					"delta": map[string]any{"type": "signature_delta", "signature": o.Signature},
+				})
+			}
 		case "assistantResponseEvent":
 			txt := parseAssistantText(payload)
 			if txt == "" {
@@ -741,6 +781,8 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, resp *http.Response, req
 // aggregateAnthropic buffers the whole turn into a single Anthropic Messages JSON.
 func (s *Server) aggregateAnthropic(w http.ResponseWriter, resp *http.Response, req *anthRequest, account *config.Account, apiKeyID string) {
 	var textOut strings.Builder
+	var thinkingOut strings.Builder
+	var thinkingSig string
 	tools := map[string]*toolAccum{}
 	var toolOrder []string
 	stopReason := "END_TURN"
@@ -748,6 +790,16 @@ func (s *Server) aggregateAnthropic(w http.ResponseWriter, resp *http.Response, 
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
 		switch et {
+		case "reasoningContentEvent":
+			var o struct {
+				Text      string `json:"text"`
+				Signature string `json:"signature"`
+			}
+			_ = json.Unmarshal(payload, &o)
+			thinkingOut.WriteString(o.Text)
+			if o.Signature != "" {
+				thinkingSig = o.Signature
+			}
 		case "assistantResponseEvent":
 			textOut.WriteString(parseAssistantText(payload))
 		case "toolUseEvent":
@@ -790,6 +842,13 @@ func (s *Server) aggregateAnthropic(w http.ResponseWriter, resp *http.Response, 
 	})
 
 	content := []map[string]any{}
+	if thinkingOut.Len() > 0 {
+		tb := map[string]any{"type": "thinking", "thinking": thinkingOut.String()}
+		if thinkingSig != "" {
+			tb["signature"] = thinkingSig
+		}
+		content = append(content, tb)
+	}
 	if textOut.Len() > 0 {
 		content = append(content, map[string]any{"type": "text", "text": textOut.String()})
 	}

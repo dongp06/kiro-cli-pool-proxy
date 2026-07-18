@@ -402,3 +402,41 @@ Union event thật quan sát được trong 1 turn có tool-call:
 - Credit/turn = `meteringEvent.usage` (last-wins). Context% = `contextUsageEvent`.
 - Không cần hiểu tool protocol để proxy hoạt động — CLI tự quản tool loop; proxy chỉ
   forward + đếm. (Ghi lại đây để tham chiếu khi cần build client tương thích.)
+
+---
+
+## Thinking / Reasoning (verified 2026-07-18, live probe)
+
+Kiro streams model reasoning ("adaptive thinking", bật mặc định trên model mạnh như
+`claude-opus-4.8`) qua một event-type **riêng** trong ChatResponseStream:
+
+### `reasoningContentEvent`
+
+```jsonc
+{"text":"Setting up the classic ball and bat problem: ..."}   // nhiều frame, ghép lại = reasoning
+{"text":" gives x=0.05 for the ball."}
+{"signature":"EokCCnEIDxABGAIqQC/Of..."}                      // frame cuối: chữ ký reasoning
+```
+
+- Reasoning **đến TRƯỚC** `assistantResponseEvent` (câu trả lời).
+- Kiro tự reason cho model có năng lực — **không cần** field `thinking` trong request
+  (request native kiro-cli KHÔNG có field thinking; opus vẫn reason).
+- Model schema (`ListAvailableModels.additionalModelRequestFieldsSchema`) khai báo
+  `thinking:{type: adaptive|disabled, display: summarized|omitted}` + `output_config.effort`
+  (low/medium/high/xhigh/max) — carry qua `additionalModelRequestFields` (optional).
+- Thứ tự event 1 turn có reasoning: `initial-response` → `reasoningContentEvent`×N
+  (text) → `reasoningContentEvent` (signature) → `assistantResponseEvent`×N →
+  `metadataEvent` → `contextUsageEvent` → `meteringEvent`.
+
+### Ánh xạ sang client (đã implement + verify trong proxy)
+
+| Kiro | Anthropic Messages | OpenAI Chat Completions |
+|------|--------------------|-------------------------|
+| `reasoningContentEvent.text` | `thinking` block: `content_block_start{type:thinking}` + `thinking_delta` | `delta.reasoning_content` |
+| `reasoningContentEvent.signature` | `signature_delta` | (bỏ qua) |
+| non-stream | content `[{type:thinking, thinking, signature}, {type:text}]` | `message.reasoning_content` |
+
+opencode/Claude Code gửi `thinking:{type:enabled, budget_tokens:N}` trong request —
+proxy chấp nhận (bỏ qua an toàn, reasoning vẫn tự bật) và trả reasoning về đúng format
+thinking để client hiển thị real-time. Thinking block trong history do client gửi lại
+được drop an toàn (Kiro stateless, tự reason lại mỗi turn).

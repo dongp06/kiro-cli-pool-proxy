@@ -248,6 +248,7 @@ func kiroToolsOpenAI(tools []oaiTool) []map[string]any {
 		if schema == nil {
 			schema = map[string]any{"type": "object"}
 		}
+		schema = normalizeToolSchema(schema)
 		out = append(out, map[string]any{
 			"toolSpecification": map[string]any{
 				"name":        t.Function.Name,
@@ -338,6 +339,13 @@ func (s *Server) streamOpenAI(w http.ResponseWriter, resp *http.Response, req *o
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
 		switch et {
+		case "reasoningContentEvent":
+			var o struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(payload, &o) == nil && o.Text != "" {
+				send(chunk(map[string]any{"reasoning_content": o.Text}, nil))
+			}
 		case "assistantResponseEvent":
 			if txt := parseAssistantText(payload); txt != "" {
 				outChars += len(txt)
@@ -411,6 +419,7 @@ func (s *Server) streamOpenAI(w http.ResponseWriter, resp *http.Response, req *o
 
 func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req *oaiRequest, account *config.Account, apiKeyID string) {
 	var textOut strings.Builder
+	var reasoningOut strings.Builder
 	tools := map[string]*toolAccum{}
 	var toolOrder []string
 	stopReason := "END_TURN"
@@ -418,6 +427,13 @@ func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
 		switch et {
+		case "reasoningContentEvent":
+			var o struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(payload, &o) == nil {
+				reasoningOut.WriteString(o.Text)
+			}
 		case "assistantResponseEvent":
 			textOut.WriteString(parseAssistantText(payload))
 		case "toolUseEvent":
@@ -464,6 +480,9 @@ func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req
 		msg["content"] = textOut.String()
 	} else {
 		msg["content"] = nil
+	}
+	if reasoningOut.Len() > 0 {
+		msg["reasoning_content"] = reasoningOut.String()
 	}
 	if len(toolOrder) > 0 {
 		var tcs []map[string]any
