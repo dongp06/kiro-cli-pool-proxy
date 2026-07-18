@@ -1,4 +1,4 @@
-# Kiro CLI Pool Proxy
+# KiroPool
 
 Plain reverse-proxy xoay account cho **kiro-cli gốc**. Không cần MITM, không cần
 cert, không cần fork. Dùng chính cơ chế endpoint override có sẵn trong kiro-cli.
@@ -58,10 +58,10 @@ go run ./cmd/import-local
 ### 4. Trỏ kiro-cli vào proxy
 
 ```bash
-./set-endpoints.sh http://127.0.0.1:9999 us-east-1
+./set-endpoints.sh http://127.0.0.1:5000 us-east-1
 # hoặc thủ công:
-kiro-cli settings api.krs.service '{"endpoint":"http://127.0.0.1:9999","region":"us-east-1"}'
-kiro-cli settings api.cps.service '{"endpoint":"http://127.0.0.1:9999","region":"us-east-1"}'
+kiro-cli settings api.krs.service '{"endpoint":"http://127.0.0.1:5000","region":"us-east-1"}'
+kiro-cli settings api.cps.service '{"endpoint":"http://127.0.0.1:5000","region":"us-east-1"}'
 ```
 
 ### 5. Dùng kiro-cli như bình thường
@@ -86,12 +86,12 @@ SSE), swap account pool và **đếm credit per-key** như kiro-cli.
 ### Claude Code CLI
 
 ```bash
-export ANTHROPIC_BASE_URL=http://SERVER_IP:9999
+export ANTHROPIC_BASE_URL=http://SERVER_IP:5000
 export ANTHROPIC_API_KEY=kpp_xxxxxxxxxxxxxxxx   # API key tạo trong admin panel
 claude
 ```
 
-Claude Code sẽ gọi `http://SERVER_IP:9999/v1/messages` (gửi key qua header `x-api-key`).
+Claude Code sẽ gọi `http://SERVER_IP:5000/v1/messages` (gửi key qua header `x-api-key`).
 
 ### opencode
 
@@ -104,7 +104,7 @@ opencode hỗ trợ provider Anthropic-compatible. Trỏ baseURL vào proxy tron
     "kiro-pool": {
       "npm": "@ai-sdk/anthropic",
       "options": {
-        "baseURL": "http://SERVER_IP:9999/v1",
+        "baseURL": "http://SERVER_IP:5000/v1",
         "apiKey": "kpp_xxxxxxxxxxxxxxxx"
       },
       "models": { "claude-3-5-sonnet": { "name": "Kiro Pool (Sonnet)" } }
@@ -132,12 +132,12 @@ Proxy cũng expose endpoint **OpenAI Chat Completions** tại `POST /v1/chat/com
 ### Codex CLI / client OpenAI
 
 ```bash
-export OPENAI_BASE_URL=http://SERVER_IP:9999/v1
+export OPENAI_BASE_URL=http://SERVER_IP:5000/v1
 export OPENAI_API_KEY=kpp_xxxxxxxxxxxxxxxx
 codex
 ```
 
-Client gọi `http://SERVER_IP:9999/v1/chat/completions` (key qua `Authorization: Bearer`).
+Client gọi `http://SERVER_IP:5000/v1/chat/completions` (key qua `Authorization: Bearer`).
 
 ### opencode (provider OpenAI-compatible)
 
@@ -147,7 +147,7 @@ Client gọi `http://SERVER_IP:9999/v1/chat/completions` (key qua `Authorization
     "kiro-pool-oai": {
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "http://SERVER_IP:9999/v1",
+        "baseURL": "http://SERVER_IP:5000/v1",
         "apiKey": "kpp_xxxxxxxxxxxxxxxx"
       },
       "models": { "kiro-auto": { "name": "Kiro Pool (auto)" } }
@@ -161,7 +161,7 @@ Tool calling (`tools`/`tool_calls`/`role:tool`) đã map sang Kiro toolUses/tool
 
 ## Web Admin Panel
 
-Mở `http://localhost:9999/admin` để quản lý qua giao diện (dark dashboard):
+Mở `http://localhost:5000/admin` để quản lý qua giao diện (dark dashboard):
 
 - **KPI cards**: tổng accounts, requests, credits, quota
 - **Bảng accounts**: quota bar (invocations), credits, requests, status, bật/tắt/xóa
@@ -185,24 +185,24 @@ Vì đây là plain HTTP proxy (không MITM), chạy remote rất đơn giản:
 
 ```bash
 # Trên SERVER:
-#   config.json: "listenAddr": "0.0.0.0:9999", "poolKey": "secret" (tùy chọn)
+#   config.json: "listenAddr": "0.0.0.0:5000", "poolKey": "secret" (tùy chọn)
 ./kiro-pool-proxy
-sudo ufw allow 9999/tcp
+sudo ufw allow 5000/tcp
 
 # Trên CLIENT (máy chạy kiro-cli):
-./set-endpoints.sh http://SERVER_IP:9999 us-east-1
+./set-endpoints.sh http://SERVER_IP:5000 us-east-1
 kiro-cli chat
 ```
 
 Không cần copy/trust cert gì cả. Nếu qua internet công cộng nên:
 - Đặt proxy sau TLS (nginx/caddy) và set endpoint `https://...`
-- Hoặc dùng SSH tunnel: `ssh -N -L 9999:127.0.0.1:9999 user@SERVER`
+- Hoặc dùng SSH tunnel: `ssh -N -L 5000:127.0.0.1:5000 user@SERVER`
 
 ## Config
 
 ```json
 {
-  "listenAddr": "0.0.0.0:9999",
+  "listenAddr": "0.0.0.0:5000",
   "strategy": "smart",
   "poolKey": "",
   "accounts": [
@@ -224,7 +224,7 @@ Không cần copy/trust cert gì cả. Nếu qua internet công cộng nên:
 
 | Field | Mô tả |
 |-------|-------|
-| `listenAddr` | `127.0.0.1:9999` (local) hoặc `0.0.0.0:9999` (remote) |
+| `listenAddr` | `127.0.0.1:5000` (local) hoặc `0.0.0.0:5000` (remote) |
 | `strategy` | `round-robin` hoặc `smart` (ưu tiên account còn nhiều quota) |
 | `poolKey` | Tùy chọn: shared secret, client gửi qua header `X-Pool-Key` |
 

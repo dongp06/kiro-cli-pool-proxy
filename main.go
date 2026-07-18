@@ -73,7 +73,7 @@ func main() {
 	proxyURL := fmt.Sprintf("http://%s:%s", displayHost, port)
 
 	log.Printf("╔══════════════════════════════════════════════════════════════╗")
-	log.Printf("║   Kiro CLI Pool Proxy  (plain reverse-proxy mode)            ║")
+	log.Printf("║   KiroPool  ·  Kiro account pool + Anthropic/OpenAI gateway  ║")
 	log.Printf("╠══════════════════════════════════════════════════════════════╣")
 	log.Printf("║   Listen:   %-48s ║", cfg.ListenAddr)
 	log.Printf("║   Accounts: %-48d ║", enabledCount)
@@ -96,7 +96,7 @@ func main() {
 
 func createTemplateConfig(path string) {
 	template := `{
-  "listenAddr": "0.0.0.0:9999",
+  "listenAddr": "0.0.0.0:5000",
   "strategy": "smart",
   "poolKey": "",
   "accounts": [

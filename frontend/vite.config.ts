@@ -13,7 +13,7 @@ export default defineConfig({
   server: {
     // dev proxy: forward API calls to the running Go proxy
     proxy: {
-      '/admin/api': 'http://127.0.0.1:9999',
+      '/admin/api': 'http://127.0.0.1:5000',
     },
   },
 })

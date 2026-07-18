@@ -121,7 +121,7 @@ function Login({ onOk, theme }: { onOk: () => void; theme: ReturnType<typeof use
         <div className="w-14 h-14 rounded-2xl mx-auto mb-4 grid place-items-center text-[#04121f] shadow-[0_0_20px_rgba(110,231,183,.25)] bg-gradient-to-br from-[var(--brand)] to-[var(--accent)] text-3xl">
           <I.Logo />
         </div>
-        <h1 className="text-center text-[22px] font-extrabold m-0 mb-1.5">Pool Proxy Admin</h1>
+        <h1 className="text-center text-[22px] font-extrabold m-0 mb-1.5">KiroPool</h1>
         <p className="text-center text-[var(--muted)] text-[13.5px] m-0 mb-6">Đăng nhập để quản lý pool accounts</p>
         <label className={cls.label}>Mật khẩu</label>
         <div className="relative">
@@ -193,7 +193,7 @@ function Dashboard(props: {
         <div className="max-w-[1180px] mx-auto px-6 py-3.5 flex items-center gap-5 flex-wrap">
           <div className="flex items-center gap-3 font-extrabold text-[17px]">
             <span className="w-8 h-8 rounded-[9px] grid place-items-center text-[#04121f] text-lg shadow-[0_0_20px_rgba(110,231,183,.25)] bg-gradient-to-br from-[var(--brand)] to-[var(--accent)]"><I.Logo /></span>
-            Kiro Pool Proxy
+            KiroPool
           </div>
           <nav className="flex gap-1 rounded-xl p-1 bg-[var(--panel2)] border border-[var(--border)]">
             {([['accounts', 'Accounts', I.Users], ['connect', 'Kết nối', I.Plug], ['settings', 'Cài đặt', I.Gear]] as const).map(([id, label, Ico]) => (
@@ -273,7 +273,7 @@ function Dashboard(props: {
       <footer className="border-t border-[var(--border)] mt-5">
         <div className="max-w-[1180px] mx-auto px-6 py-5 flex items-center gap-3.5 text-[12.5px] text-[var(--muted)] flex-wrap">
           <span className="flex items-center gap-2 font-extrabold text-sm text-[var(--text)]">
-            <span className="w-6 h-6 rounded-md grid place-items-center text-[#04121f] bg-gradient-to-br from-[var(--brand)] to-[var(--accent)]"><I.Logo /></span> Kiro Pool Proxy
+            <span className="w-6 h-6 rounded-md grid place-items-center text-[#04121f] bg-gradient-to-br from-[var(--brand)] to-[var(--accent)]"><I.Logo /></span> KiroPool
           </span>
           <span className="w-px h-5 bg-[var(--border2)]" />
           <span><span className="inline-block w-2 h-2 rounded-full bg-[var(--ok)] mr-1.5 shadow-[0_0_8px_var(--ok)]" style={{ animation: 'pulse 2s infinite' }} />Đang chạy</span>

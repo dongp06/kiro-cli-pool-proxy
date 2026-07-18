@@ -79,7 +79,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	if cfg.ListenAddr == "" {
-		cfg.ListenAddr = "127.0.0.1:9999"
+		cfg.ListenAddr = "127.0.0.1:5000"
 	}
 	if cfg.Strategy == "" {
 		cfg.Strategy = "round-robin"
