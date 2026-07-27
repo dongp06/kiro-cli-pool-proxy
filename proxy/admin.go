@@ -340,6 +340,7 @@ type accountView struct {
 	NextResetUnix int64   `json:"nextResetUnix"`
 	HasProfileArn bool    `json:"hasProfileArn"`
 	TokenExpires  int64   `json:"tokenExpires"`
+	Plan          string  `json:"plan"`
 }
 
 func toView(a config.Account) accountView {
@@ -348,7 +349,7 @@ func toView(a config.Account) accountView {
 		Enabled: a.Enabled, Credits: a.Credits, Requests: a.Requests,
 		LastUsedUnix: a.LastUsedUnix, UsageLimit: a.UsageLimit, UsageCurrent: a.UsageCurrent,
 		NextResetUnix: a.NextResetUnix, HasProfileArn: strings.TrimSpace(a.ProfileArn) != "",
-		TokenExpires: a.ExpiresAt,
+		TokenExpires: a.ExpiresAt, Plan: a.Plan,
 	}
 }
 
@@ -523,8 +524,9 @@ func (a *AdminHandler) apiRefreshQuota(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 	limit, current, nextReset := auth.QuotaFromUsage(resp)
-	if limit > 0 {
-		a.cfg.UpdateQuota(acc.ID, limit, current, nextReset)
+	plan := auth.PlanFromUsage(resp)
+	if limit > 0 || plan != "" {
+		a.cfg.UpdateQuota(acc.ID, limit, current, nextReset, plan)
 		a.cfg.Save()
 	}
 	if updated, ok := a.cfg.GetAccountByID(id); ok {

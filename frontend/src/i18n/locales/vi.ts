@@ -43,6 +43,7 @@ export const vi: Record<string, string> = {
   'acc.statusExhausted': 'hết quota',
   'acc.auth': 'Auth',
   'acc.region': 'Region',
+  'acc.plan': 'Gói',
   'acc.quotaLabel': 'Quota (invocations)',
   'acc.confirmDelete': 'Xóa account {id} ?',
   'acc.test': 'Kiểm tra',

@@ -43,6 +43,7 @@ export const en: Record<string, string> = {
   'acc.statusExhausted': 'exhausted',
   'acc.auth': 'Auth',
   'acc.region': 'Region',
+  'acc.plan': 'Plan',
   'acc.quotaLabel': 'Quota (invocations)',
   'acc.confirmDelete': 'Delete account {id} ?',
   'acc.test': 'Test',

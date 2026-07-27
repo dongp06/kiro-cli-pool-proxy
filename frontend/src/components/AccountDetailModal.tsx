@@ -49,6 +49,7 @@ export function AccountDetailModal({ a, t, privacy, models, onClose, onToggle, o
   const rows: [string, React.ReactNode][] = [
     [t('acc.auth'), <b className="font-mono">{a.authMethod}</b>],
     [t('acc.region'), <b className="font-mono">{a.region || '—'}</b>],
+    [t('acc.plan'), a.plan ? <b className="text-[var(--brand)]">{a.plan}</b> : <span className="text-[var(--faint)]">—</span>],
     [t('detail.profileArn'), a.hasProfileArn ? <span className="text-[var(--ok)]">{t('detail.present')}</span> : <span className="text-[var(--warn)]">{t('detail.missing')}</span>],
     [t('detail.tokenExpires'), <span className="font-mono">{a.tokenExpires ? fmtClock(a.tokenExpires) : '—'}</span>],
     [t('stat.credits'), <b>{fmtNum(a.credits)}</b>],

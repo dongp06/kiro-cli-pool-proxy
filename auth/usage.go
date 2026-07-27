@@ -13,9 +13,18 @@ import (
 // UsageLimitsResponse mirrors the GetUsageLimits management response.
 // Shape confirmed from kiro-cli binary + Kiro-Go (verified 1:1).
 type UsageLimitsResponse struct {
-	UsageBreakdownList []usageBreakdown `json:"usageBreakdownList"`
-	NextDateReset      json.Number      `json:"nextDateReset"`
-	UserInfo           *usageUserInfo   `json:"userInfo"`
+	UsageBreakdownList []usageBreakdown  `json:"usageBreakdownList"`
+	NextDateReset      json.Number       `json:"nextDateReset"`
+	UserInfo           *usageUserInfo    `json:"userInfo"`
+	SubscriptionInfo   *subscriptionInfo `json:"subscriptionInfo"`
+}
+
+// subscriptionInfo carries the account's real Kiro plan. subscriptionTitle is a
+// display string (e.g. "KIRO POWER"); Type is the SubscriptionType enum
+// (e.g. "Q_DEVELOPER_STANDALONE_POWER").
+type subscriptionInfo struct {
+	SubscriptionTitle string `json:"subscriptionTitle"`
+	Type              string `json:"type"`
 }
 
 type usageBreakdown struct {
@@ -142,6 +151,19 @@ func QuotaFromUsage(resp *UsageLimitsResponse) (limit, current float64, nextRese
 		}
 	}
 	return limit, current, nextResetUnix
+}
+
+// PlanFromUsage returns the account's subscription plan display name from a
+// GetUsageLimits response (e.g. "KIRO POWER"), falling back to the raw
+// SubscriptionType enum, then "". Never guesses a tier — reports what upstream sends.
+func PlanFromUsage(resp *UsageLimitsResponse) string {
+	if resp == nil || resp.SubscriptionInfo == nil {
+		return ""
+	}
+	if t := strings.TrimSpace(resp.SubscriptionInfo.SubscriptionTitle); t != "" {
+		return t
+	}
+	return strings.TrimSpace(resp.SubscriptionInfo.Type)
 }
 
 // pickAgenticBreakdown finds the AGENTIC_REQUEST breakdown (chat quota),

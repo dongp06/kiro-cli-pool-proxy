@@ -60,6 +60,7 @@ type Account struct {
 	UsageLimit   float64 `json:"usageLimit,omitempty"`   // total credit limit
 	UsageCurrent float64 `json:"usageCurrent,omitempty"` // current usage from upstream
 	NextResetUnix int64  `json:"nextResetUnix,omitempty"`// next quota reset (unix sec)
+	Plan         string  `json:"plan,omitempty"`         // subscription plan title (e.g. "KIRO POWER")
 }
 
 // Config holds the proxy configuration.
@@ -218,16 +219,22 @@ func (c *Config) RecordUsage(id string, credits float64) {
 	}
 }
 
-// UpdateQuota stores quota snapshot from GetUsageLimits.
-func (c *Config) UpdateQuota(id string, limit, current float64, nextResetUnix int64) {
+// UpdateQuota stores quota snapshot from GetUsageLimits. An empty plan leaves
+// the existing plan untouched.
+func (c *Config) UpdateQuota(id string, limit, current float64, nextResetUnix int64, plan string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	for i := range c.Accounts {
 		if c.Accounts[i].ID == id {
-			c.Accounts[i].UsageLimit = limit
-			c.Accounts[i].UsageCurrent = current
-			c.Accounts[i].NextResetUnix = nextResetUnix
+			if limit > 0 {
+				c.Accounts[i].UsageLimit = limit
+				c.Accounts[i].UsageCurrent = current
+				c.Accounts[i].NextResetUnix = nextResetUnix
+			}
+			if plan != "" {
+				c.Accounts[i].Plan = plan
+			}
 			break
 		}
 	}

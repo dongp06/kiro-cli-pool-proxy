@@ -23,6 +23,7 @@ export interface Account {
   nextResetUnix: number
   hasProfileArn: boolean
   tokenExpires: number
+  plan: string
 }
 
 export interface Settings {

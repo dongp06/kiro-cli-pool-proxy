@@ -58,6 +58,7 @@ export function AccountCard({ a, t, privacy, onOpen, onToggle, onTest, onRefresh
       <div className="flex gap-3.5 flex-wrap text-[12.5px] text-[var(--muted)] mb-1.5">
         <span>{t('acc.auth')} <b className="text-[var(--text)] font-semibold">{a.authMethod}</b></span>
         <span>{t('acc.region')} <b className="text-[var(--text)] font-semibold font-mono">{a.region || '—'}</b></span>
+        {a.plan ? <span>{t('acc.plan')} <b className="text-[var(--brand)] font-semibold">{a.plan}</b></span> : null}
       </div>
       <div className="my-3">
         <QuotaMeter limit={a.usageLimit} current={a.usageCurrent} nextResetUnix={a.nextResetUnix} t={t} />
