@@ -33,11 +33,15 @@ func main() {
 	p := pool.New(cfg)
 	enabledCount := p.AvailableCount()
 	if enabledCount == 0 {
-		log.Fatalf("No enabled accounts in config. Add accounts to %s", *configPath)
+		log.Printf("No enabled accounts yet — add them via the admin panel or edit %s. Proxy will start anyway.", *configPath)
 	}
 
 	auth.StartBackgroundRefresh(cfg)
-	auth.StartQuotaPoller(cfg, 5*time.Minute)
+
+	// Seed the model-resolution overlay from any previously-synced model list.
+	if models := cfg.GetKiroModels(); len(models) > 0 {
+		proxy.SetSyncedKiroModels(models)
+	}
 
 	// Persist usage counters periodically.
 	go func() {

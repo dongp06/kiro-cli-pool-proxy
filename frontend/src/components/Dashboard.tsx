@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { api, Unauthorized, type Account, type Overview } from '../api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api, Unauthorized, type Account, type KiroModel, type Overview, type ServerEvent } from '../api'
 import type { Ctx, ToastFn } from '../context'
 import { usePrivacy } from '../hooks/usePrivacy'
 import { cls } from '../lib/styles'
@@ -9,8 +9,8 @@ import { LangSwitch } from './LangSwitch'
 import { ThemeBtn } from './ThemeBtn'
 import { Stat } from './Stat'
 import { AccountCard } from './AccountCard'
-import { AddModal } from './AddModal'
-import { ImportModal } from './ImportModal'
+import { AddAccountModal } from './AddAccountModal'
+import { AccountDetailModal } from './AccountDetailModal'
 import { ConnectTab } from '../tabs/ConnectTab'
 import { SettingsTab } from '../tabs/SettingsTab'
 import { LogsTab } from '../tabs/LogsTab'
@@ -36,7 +36,9 @@ export function Dashboard(props: {
     return v !== null ? +v * 1000 : 8000
   })
   const [addOpen, setAddOpen] = useState(false)
-  const [importOpen, setImportOpen] = useState(false)
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const [models, setModels] = useState<KiroModel[]>([])
+  const [syncing, setSyncing] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const region = accs[0]?.region || 'us-east-1'
@@ -51,14 +53,42 @@ export function Dashboard(props: {
   }, [props])
 
   useEffect(() => { refresh() }, [refresh])
+  useEffect(() => { api.models().then(setModels).catch(() => {}) }, [])
+
+  // Polling fallback: only when SSE is unavailable AND user kept auto-refresh on.
+  const sseUp = useRef(false)
   useEffect(() => {
     if (refreshMs <= 0) return
-    const iv = setInterval(refresh, refreshMs)
+    const iv = setInterval(() => { if (!sseUp.current) refresh() }, refreshMs)
     return () => clearInterval(iv)
   }, [refresh, refreshMs])
 
+  // Realtime: quota deltas patch individual cards; account list changes trigger a refresh.
+  useEffect(() => {
+    const es = api.events((ev: ServerEvent) => {
+      sseUp.current = true
+      if (ev.type === 'quota') {
+        const acc = ev.data as Account
+        if (acc && acc.id) setAccs((prev) => prev.map((a) => (a.id === acc.id ? { ...a, ...acc } : a)))
+      } else if (ev.type === 'accounts') {
+        const list = ev.data as Account[]
+        if (Array.isArray(list)) { setAccs(list); refresh() }
+      }
+    }, () => { sseUp.current = false })
+    return () => es.close()
+  }, [refresh])
+
   const logout = async () => { await api.logout().catch(() => {}); props.onLogout() }
   const setStrategy = async (s: string) => { await api.setStrategy(s); props.toast(t('set.saved')); refresh() }
+  const syncModels = async () => {
+    setSyncing(true)
+    try {
+      const r = await api.syncModels()
+      if (r.ok && r.models) { setModels(r.models); props.toast(t('models.synced', { n: r.models.length })) }
+      else props.toast(t('models.syncFail', { err: r.error || '' }), true)
+    } catch { props.toast(t('models.syncFail', { err: '' }), true) }
+    finally { setSyncing(false) }
+  }
 
   const qpct = ov && ov.quotaLimit > 0 ? Math.round((ov.quotaUsed / ov.quotaLimit) * 100) : 0
   const url = location.protocol + '//' + location.host
@@ -125,7 +155,7 @@ export function Dashboard(props: {
                   <option value="round-robin">{t('strategy.rr')}</option>
                   <option value="smart">{t('strategy.smart')}</option>
                 </select>
-                <button className={`${cls.btn} ${cls.sm}`} onClick={() => setImportOpen(true)}><I.Download /> {t('acc.import')}</button>
+                <button className={`${cls.btn} ${cls.sm}`} onClick={syncModels} disabled={syncing} aria-busy={syncing}><I.Refresh /> {syncing ? t('models.syncing') : t('models.sync')}</button>
                 <button className={`${cls.btn} ${cls.btnPrimary} ${cls.sm}`} onClick={() => setAddOpen(true)}><I.Plus /> {t('acc.add')}</button>
               </div>
             </div>
@@ -153,7 +183,19 @@ export function Dashboard(props: {
                 <div className="grid gap-3.5" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(340px,1fr))' }}>
                   {filtered.map((a) => (
                     <AccountCard key={a.id} a={a} t={t} privacy={privacy.on}
+                      onOpen={() => setDetailId(a.id)}
                       onToggle={async () => { await api.toggleAccount(a.id, !a.enabled); props.toast(a.enabled ? t('toast.accOff') : t('toast.accOn')); refresh() }}
+                      onTest={async () => {
+                        const r = await api.testAccount(a.id)
+                        if (r.ok) props.toast(t('toast.testOk')); else props.toast(t('toast.testFail', { err: r.error || '' }))
+                        refresh()
+                        return r.ok
+                      }}
+                      onRefreshQuota={async () => {
+                        const r = await api.refreshQuota(a.id)
+                        if (r.ok) props.toast(t('toast.quotaRefreshed')); else props.toast(t('toast.quotaFail', { err: r.error || '' }))
+                        refresh()
+                      }}
                       onDelete={async () => { if (confirm(t('acc.confirmDelete', { id: a.id }))) { await api.deleteAccount(a.id); props.toast(t('toast.accDeleted')); refresh() } }} />
                   ))}
                 </div>
@@ -186,8 +228,28 @@ export function Dashboard(props: {
         </div>
       </footer>
 
-      {addOpen && <AddModal t={t} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); refresh() }} toast={props.toast} />}
-      {importOpen && <ImportModal t={t} region={region} onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); refresh() }} toast={props.toast} />}
+      {addOpen && <AddAccountModal t={t} region={region} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); refresh() }} toast={props.toast} />}
+      {detailId && (() => {
+        const a = accs.find((x) => x.id === detailId)
+        if (!a) return null
+        return (
+          <AccountDetailModal a={a} t={t} privacy={privacy.on} models={models}
+            onClose={() => setDetailId(null)}
+            onToggle={async () => { await api.toggleAccount(a.id, !a.enabled); props.toast(a.enabled ? t('toast.accOff') : t('toast.accOn')); refresh() }}
+            onTest={async () => {
+              const r = await api.testAccount(a.id)
+              if (r.ok) props.toast(t('toast.testOk')); else props.toast(t('toast.testFail', { err: r.error || '' }))
+              refresh()
+              return r.ok
+            }}
+            onRefreshQuota={async () => {
+              const r = await api.refreshQuota(a.id)
+              if (r.ok) props.toast(t('toast.quotaRefreshed')); else props.toast(t('toast.quotaFail', { err: r.error || '' }))
+              refresh()
+            }}
+            onDelete={async () => { if (confirm(t('acc.confirmDelete', { id: a.id }))) { await api.deleteAccount(a.id); props.toast(t('toast.accDeleted')); setDetailId(null); refresh() } }} />
+        )
+      })()}
     </div>
   )
 }

@@ -15,6 +15,26 @@ export function fmtClock(u: number): string {
   return new Date(u * 1000).toLocaleTimeString()
 }
 
+// fmtUntil formats the time remaining until a future unix timestamp as a short
+// relative span (e.g. "3d", "5h", "12m"). Returns "—" when absent, "now" when
+// already elapsed.
+export function fmtUntil(u: number): string {
+  if (!u) return '—'
+  const d = u - Date.now() / 1000
+  if (d <= 0) return 'now'
+  if (d < 3600) return Math.max(1, Math.round(d / 60)) + 'm'
+  if (d < 86400) return Math.round(d / 3600) + 'h'
+  return Math.round(d / 86400) + 'd'
+}
+
+// fmtCompact renders large counts compactly (1.2K, 3.4M) while keeping small
+// numbers exact — used where horizontal space is tight (card stat chips).
+export function fmtCompact(n: number): string {
+  const v = n || 0
+  if (Math.abs(v) < 1000) return fmtNum(v)
+  return v.toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 1 })
+}
+
 // mask obscures the middle of a string, keeping the head/tail visible.
 export function mask(s: string): string {
   if (!s) return s

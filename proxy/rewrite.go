@@ -1,9 +1,32 @@
 package proxy
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 )
+
+// hostFromURL extracts the host component from an absolute URL, returning ""
+// when the URL cannot be parsed.
+func hostFromURL(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return u.Host
+	}
+	return ""
+}
+
+// apiKeyChatURL returns the full chat (GenerateAssistantResponse) URL for a
+// Kiro API key (ksk_) account. API keys are NOT accepted at runtime.*.kiro.dev;
+// they must hit the CodeWhisperer data-plane at q.{region}.amazonaws.com with
+// the /generateAssistantResponse path and Content-Type application/json.
+// (Ported from Kiro-Go apiKeyRuntimeEndpoint + regionalizeURLForRegion.)
+func apiKeyChatURL(region string) string {
+	region = strings.TrimSpace(region)
+	if region == "" || region == "us-east-1" {
+		return "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse"
+	}
+	return "https://q." + region + ".amazonaws.com/generateAssistantResponse"
+}
 
 // runtimeHostForRegion returns the exact runtime (data-plane / chat) host.
 // Table confirmed from kiro-cli binary endpoints.rs. GovCloud uses kiro.dev;
@@ -51,6 +74,42 @@ func managementHostForRegion(region string) string {
 
 // profileArnRegex matches "profileArn":"..." in JSON body.
 var profileArnRegex = regexp.MustCompile(`"profileArn"\s*:\s*"[^"]*"`)
+
+// RemoveProfileArn deletes the first profileArn member from a JSON body. API-key
+// (ksk_) accounts authenticate by key alone and the CodeWhisperer data-plane
+// rejects a stray/placeholder profileArn — upstream sends the field omitempty.
+// It removes exactly one adjacent comma (trailing preferred, else leading) so
+// the surrounding object stays valid JSON.
+func RemoveProfileArn(body []byte) []byte {
+	loc := profileArnRegex.FindIndex(body)
+	if loc == nil {
+		return body
+	}
+	start, end := loc[0], loc[1]
+
+	// Absorb a trailing comma (", " form): `"profileArn":"x",` → removed.
+	i := end
+	for i < len(body) && (body[i] == ' ' || body[i] == '\t' || body[i] == '\n' || body[i] == '\r') {
+		i++
+	}
+	if i < len(body) && body[i] == ',' {
+		end = i + 1
+	} else {
+		// No trailing comma (last member): absorb a leading comma instead.
+		j := start - 1
+		for j >= 0 && (body[j] == ' ' || body[j] == '\t' || body[j] == '\n' || body[j] == '\r') {
+			j--
+		}
+		if j >= 0 && body[j] == ',' {
+			start = j
+		}
+	}
+
+	out := make([]byte, 0, len(body)-(end-start))
+	out = append(out, body[:start]...)
+	out = append(out, body[end:]...)
+	return out
+}
 
 // RewriteProfileArn replaces the profileArn value in the request body.
 // Uses regex replacement to avoid full JSON parse/re-marshal.

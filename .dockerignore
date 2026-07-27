@@ -1,0 +1,15 @@
+# Keep the Docker build context small and free of secrets.
+.git
+.gitignore
+.upstream
+frontend/node_modules
+frontend/dist
+*.exe
+*.exe~
+config.json
+data
+docs
+README.md
+Dockerfile
+docker-compose.yml
+.dockerignore

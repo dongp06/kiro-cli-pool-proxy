@@ -7,9 +7,13 @@ import * as I from '../icons'
 export function ConnectTab({ url, region, t, toast }: { url: string; region: string; t: T; toast: ToastFn }) {
   const zero = `curl -fsSL ${url}/setup-client.sh | bash -s -- ${url} ${region} <API_KEY>\nkiro-cli chat`
   const manual = `kiro-cli settings api.krs.service '{"endpoint":"${url}","region":"${region}"}'\nkiro-cli settings api.cps.service '{"endpoint":"${url}","region":"${region}"}'`
+  const claude = `export ANTHROPIC_BASE_URL="${url}"\nexport ANTHROPIC_API_KEY="<API_KEY>"\nclaude`
+  const codex = `export OPENAI_BASE_URL="${url}/v1"\nexport OPENAI_API_KEY="<API_KEY>"\ncodex`
   const eps: [React.ReactNode, string, string, string][] = [
     [<I.Chat />, 'Chat / Assistant', 'GenerateAssistantResponse', `${url} → runtime.*.kiro.dev`],
     [<I.Layers />, 'Profiles / Usage', 'ListAvailableProfiles · GetUsageLimits', `${url} → management.*.kiro.dev`],
+    [<I.Chat />, 'Anthropic Messages', 'POST', `${url}/v1/messages`],
+    [<I.Rocket />, 'OpenAI Chat Completions', 'POST', `${url}/v1/chat/completions`],
     [<I.Rocket />, 'Client bootstrap', 'GET', `${url}/setup-client.sh`],
     [<I.Chart />, 'Health', 'GET', `${url}/health`],
   ]
@@ -31,6 +35,24 @@ export function ConnectTab({ url, region, t, toast }: { url: string; region: str
           <p className="text-[var(--muted)] mt-0 mb-3">{t('connect.manualDesc1')}</p>
           <CodeBlock text={manual} toast={toast} t={t} />
           <p className="text-[var(--muted)] mb-0 mt-3">{t('connect.manualDesc2')}</p>
+        </div>
+      </div>
+      <div className={cls.card}>
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border)]"><span className="font-bold text-[15px] flex items-center gap-2.5"><span className="text-[var(--brand)] text-[17px]"><I.Chat /></span> {t('connect.claudeTitle')}</span></div>
+        <div className="p-5">
+          <span className="inline-block px-2.5 py-0.5 rounded-md text-[11px] font-bold mb-2 bg-[rgba(45,98,239,.12)] text-[var(--accent)]">{t('connect.cliBadge')}</span>
+          <p className="text-[var(--muted)] mt-0 mb-3">{t('connect.claudeDesc1')}</p>
+          <CodeBlock text={claude} toast={toast} t={t} />
+          <p className="text-[var(--muted)] mb-0 mt-3">{t('connect.claudeDesc2')}</p>
+        </div>
+      </div>
+      <div className={cls.card}>
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--border)]"><span className="font-bold text-[15px] flex items-center gap-2.5"><span className="text-[var(--brand)] text-[17px]"><I.Rocket /></span> {t('connect.codexTitle')}</span></div>
+        <div className="p-5">
+          <span className="inline-block px-2.5 py-0.5 rounded-md text-[11px] font-bold mb-2 bg-[rgba(45,98,239,.12)] text-[var(--accent)]">{t('connect.cliBadge')}</span>
+          <p className="text-[var(--muted)] mt-0 mb-3">{t('connect.codexDesc1')}</p>
+          <CodeBlock text={codex} toast={toast} t={t} />
+          <p className="text-[var(--muted)] mb-0 mt-3">{t('connect.codexDesc2')}</p>
         </div>
       </div>
       <div className={cls.card}>

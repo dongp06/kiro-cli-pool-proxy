@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -11,10 +12,31 @@ import (
 
 func timeNowUnix() int64 { return time.Now().Unix() }
 
+// GenerateMachineId returns a random UUID v4 string used as a per-account
+// machine identifier for Kiro auth flows.
+func GenerateMachineId() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fallback to a time-derived value; extremely unlikely to be hit.
+		return fmt.Sprintf("%016x-%016x", time.Now().UnixNano(), time.Now().Unix())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// GetProxyURL returns the outbound HTTP proxy URL used by auth flows.
+// The pool proxy does not currently route auth traffic through an upstream
+// proxy, so this returns an empty string (direct connection).
+func GetProxyURL() string { return "" }
+
 // Account represents a Kiro API account with authentication credentials.
 type Account struct {
 	ID           string `json:"id"`
 	Email        string `json:"email,omitempty"`
+	UserId       string `json:"userId,omitempty"`   // Kiro/IdP user identifier
+	Provider     string `json:"provider,omitempty"` // "BuilderId" | "AzureAD" | ...
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken,omitempty"`
 	ClientID     string `json:"clientId,omitempty"`
@@ -24,7 +46,9 @@ type Account struct {
 	ProfileArn   string `json:"profileArn,omitempty"`
 	ExpiresAt    int64  `json:"expiresAt,omitempty"`
 	TokenEndpoint string `json:"tokenEndpoint,omitempty"` // External IdP
+	IssuerURL    string `json:"issuerUrl,omitempty"`      // External IdP
 	Scopes       string `json:"scopes,omitempty"`         // External IdP
+	MachineId    string `json:"machineId,omitempty"`
 	Enabled      bool   `json:"enabled"`
 
 	// Usage accounting (updated by the proxy as requests flow through).
@@ -54,6 +78,11 @@ type Config struct {
 	// API key is mandatory. Clients present a key as the Bearer token; the proxy
 	// validates it, then swaps in the pool account's real token.
 	ApiKeys []APIKey `json:"apiKeys,omitempty"`
+
+	// KiroModels is the set of modelIds the Kiro backend accepts, synced from
+	// ListAvailableModels via the admin panel. Requests naming one of these are
+	// passed through verbatim; empty falls back to the built-in default set.
+	KiroModels []string `json:"kiroModels,omitempty"`
 
 	Accounts []Account `json:"accounts"`
 
@@ -118,6 +147,30 @@ func (c *Config) GetAccounts() []Account {
 		}
 	}
 	return result
+}
+
+// GetAccountByID returns a copy of the account with the given ID.
+func (c *Config) GetAccountByID(id string) (Account, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for i := range c.Accounts {
+		if c.Accounts[i].ID == id {
+			return c.Accounts[i], true
+		}
+	}
+	return Account{}, false
+}
+
+// SetAccountProfileArn stores the resolved profile ARN for an account by ID.
+func (c *Config) SetAccountProfileArn(id, arn string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.Accounts {
+		if c.Accounts[i].ID == id {
+			c.Accounts[i].ProfileArn = arn
+			break
+		}
+	}
 }
 
 // UpdateAccountToken updates the token for an account by ID.
@@ -270,6 +323,22 @@ func (c *Config) GetAdminPassword() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.AdminPassword
+}
+
+// GetKiroModels returns a copy of the synced Kiro model id list (may be empty).
+func (c *Config) GetKiroModels() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]string, len(c.KiroModels))
+	copy(out, c.KiroModels)
+	return out
+}
+
+// SetKiroModels replaces the synced Kiro model id list.
+func (c *Config) SetKiroModels(models []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.KiroModels = append([]string(nil), models...)
 }
 
 // APIKey is a client credential presented as the Bearer token.

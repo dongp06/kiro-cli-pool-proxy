@@ -19,6 +19,7 @@ type LogStore struct {
 	mu  sync.Mutex
 	buf []LogEntry
 	cap int
+	hub *EventHub // optional; broadcasts each new entry to SSE subscribers
 }
 
 // NewLogStore creates a log store holding at most cap entries.
@@ -29,13 +30,24 @@ func NewLogStore(cap int) *LogStore {
 	return &LogStore{cap: cap, buf: make([]LogEntry, 0, cap)}
 }
 
+// SetHub attaches an event hub so new entries are pushed to SSE subscribers.
+func (s *LogStore) SetHub(h *EventHub) {
+	s.mu.Lock()
+	s.hub = h
+	s.mu.Unlock()
+}
+
 // Add appends an entry, dropping the oldest when the buffer is full.
 func (s *LogStore) Add(e LogEntry) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.buf = append(s.buf, e)
 	if len(s.buf) > s.cap {
 		s.buf = s.buf[len(s.buf)-s.cap:]
+	}
+	hub := s.hub
+	s.mu.Unlock()
+	if hub != nil {
+		hub.Publish(Event{Type: "log", Data: e})
 	}
 }
 

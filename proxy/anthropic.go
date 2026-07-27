@@ -12,7 +12,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 )
 
 // Anthropic Messages API <-> Kiro GenerateAssistantResponse translation.
@@ -409,8 +411,8 @@ func asString(v any) string {
 	return ""
 }
 
-// kiroModels is the set of modelIds the Kiro backend accepts (from
-// ListAvailableModels). Requests naming one of these pass through verbatim.
+// kiroModels is the built-in default set of modelIds the Kiro backend accepts.
+// It is the fallback when no live sync (ListAvailableModels) has been performed.
 var kiroModels = map[string]bool{
 	"auto": true, "claude-sonnet-5": true,
 	"claude-opus-4.8": true, "claude-opus-4.7": true, "claude-opus-4.6": true, "claude-opus-4.5": true,
@@ -419,6 +421,77 @@ var kiroModels = map[string]bool{
 	"gpt-5.6-sol": true, "gpt-5.6-terra": true, "gpt-5.6-luna": true,
 	"deepseek-3.2": true, "minimax-m2.5": true, "minimax-m2.1": true,
 	"glm-5": true, "qwen3-coder-next": true,
+}
+
+// syncedKiroModels overlays kiroModels with the live-synced set from
+// ListAvailableModels (populated via the admin "Sync models" action). When
+// non-empty it is the authoritative pass-through set.
+var (
+	syncedKiroModelsMu sync.RWMutex
+	syncedKiroModels   map[string]bool
+)
+
+// SetSyncedKiroModels replaces the live-synced model set. Passing nil/empty
+// reverts model resolution to the built-in default set.
+func SetSyncedKiroModels(ids []string) {
+	syncedKiroModelsMu.Lock()
+	defer syncedKiroModelsMu.Unlock()
+	if len(ids) == 0 {
+		syncedKiroModels = nil
+		return
+	}
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			m[id] = true
+		}
+	}
+	syncedKiroModels = m
+}
+
+// isKnownKiroModel reports whether id is an accepted pass-through modelId,
+// consulting the live-synced set first and falling back to the built-in set.
+func isKnownKiroModel(id string) bool {
+	syncedKiroModelsMu.RLock()
+	synced := syncedKiroModels
+	syncedKiroModelsMu.RUnlock()
+	if len(synced) > 0 {
+		return synced[id]
+	}
+	return kiroModels[id]
+}
+
+// EffectiveKiroModels returns the model list the admin UI should offer: the
+// live-synced set when present, otherwise the built-in default set. "auto" is
+// always first; the remainder is sorted for stable display.
+func EffectiveKiroModels() []auth.KiroModel {
+	syncedKiroModelsMu.RLock()
+	synced := syncedKiroModels
+	syncedKiroModelsMu.RUnlock()
+
+	src := kiroModels
+	if len(synced) > 0 {
+		src = synced
+	}
+	rest := make([]string, 0, len(src))
+	hasAuto := false
+	for id := range src {
+		if id == "auto" {
+			hasAuto = true
+			continue
+		}
+		rest = append(rest, id)
+	}
+	sort.Strings(rest)
+
+	out := make([]auth.KiroModel, 0, len(src)+1)
+	if hasAuto {
+		out = append(out, auth.KiroModel{ModelId: "auto"})
+	}
+	for _, id := range rest {
+		out = append(out, auth.KiroModel{ModelId: id})
+	}
+	return out
 }
 
 // mapKiroModel resolves an incoming (Anthropic/OpenAI) model id to a Kiro
@@ -432,7 +505,7 @@ func mapKiroModel(model string) string {
 	if model == "" {
 		return "auto"
 	}
-	if kiroModels[model] {
+	if isKnownKiroModel(model) {
 		return model
 	}
 	lm := strings.ToLower(model)
@@ -490,7 +563,13 @@ func (s *Server) dispatchKiro(r *http.Request, body []byte) (*http.Response, *co
 			s.cfg.UpdateAccountToken(account.ID, account.AccessToken, account.RefreshToken, account.ExpiresAt)
 		}
 
+		isAPIKey := account.AuthMethod == "api_key"
 		newBody := RewriteProfileArn(body, account.ProfileArn)
+		if isAPIKey {
+			// ksk keys carry no profileArn; strip the translation placeholder
+			// so the CodeWhisperer data-plane does not reject the request.
+			newBody = RemoveProfileArn(newBody)
+		}
 		region := RegionFromProfileArn(account.ProfileArn)
 		if region == "" {
 			region = account.Region
@@ -500,13 +579,23 @@ func (s *Server) dispatchKiro(r *http.Request, body []byte) (*http.Response, *co
 		}
 		host := runtimeHostForRegion(region)
 		url := "https://" + host + "/"
+		if isAPIKey {
+			// API keys are region-bound and only accepted at the CodeWhisperer
+			// data-plane (q.{region}.amazonaws.com/generateAssistantResponse).
+			url = apiKeyChatURL(region)
+			host = hostFromURL(url)
+		}
 
 		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, strings.NewReader(string(newBody)))
 		if err != nil {
 			return nil, nil, err
 		}
 		// Headers that the real kiro-cli sends (required to avoid 403).
-		upReq.Header.Set("Content-Type", "application/x-amz-json-1.0")
+		if isAPIKey {
+			upReq.Header.Set("Content-Type", "application/json")
+		} else {
+			upReq.Header.Set("Content-Type", "application/x-amz-json-1.0")
+		}
 		upReq.Header.Set("X-Amz-Target", "AmazonCodeWhispererStreamingService.GenerateAssistantResponse")
 		upReq.Header.Set("User-Agent", kiroUserAgent)
 		upReq.Header.Set("X-Amz-User-Agent", kiroXAmzUserAgent)
@@ -883,6 +972,11 @@ func (s *Server) recordChatUsage(account *config.Account, apiKeyID string, usage
 	s.cfg.UpdateQuotaCurrentDelta(account.ID, 1)
 	if apiKeyID != "" {
 		s.cfg.RecordKeyUsage(apiKeyID, usage)
+	}
+	if s.hub != nil {
+		if updated, ok := s.cfg.GetAccountByID(account.ID); ok {
+			s.hub.Publish(Event{Type: "quota", Data: toView(updated)})
+		}
 	}
 	label := account.Email
 	if label == "" {

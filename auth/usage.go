@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"kiro-cli-pool-proxy/config"
-	"log"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // UsageLimitsResponse mirrors the GetUsageLimits management response.
@@ -17,6 +15,7 @@ import (
 type UsageLimitsResponse struct {
 	UsageBreakdownList []usageBreakdown `json:"usageBreakdownList"`
 	NextDateReset      json.Number      `json:"nextDateReset"`
+	UserInfo           *usageUserInfo   `json:"userInfo"`
 }
 
 type usageBreakdown struct {
@@ -24,6 +23,13 @@ type usageBreakdown struct {
 	CurrentUsage float64 `json:"currentUsage"`
 	UsageLimit   float64 `json:"usageLimit"`
 	Unit         string  `json:"unit"`
+}
+
+// usageUserInfo carries the key/account owner identity returned by the
+// management getUsageLimits endpoint when isEmailRequired=true (API-key probe).
+type usageUserInfo struct {
+	Email  string `json:"email"`
+	UserId string `json:"userId"`
 }
 
 // managementHost returns the control-plane host for a region (GetUsageLimits).
@@ -44,7 +50,13 @@ func managementHost(region string) string {
 
 // FetchUsageLimits calls GetUsageLimits for an account.
 // Target: AmazonCodeWhispererService.GetUsageLimits, JSON POST, {origin, profileArn}.
+// For api_key (ksk_) accounts there is no profileArn: the region-bound GET form
+// (management.{region}.kiro.dev/getUsageLimits?...) with TokenType: API_KEY is used.
 func FetchUsageLimits(acc *config.Account) (*UsageLimitsResponse, error) {
+	if acc.AuthMethod == "api_key" {
+		return fetchUsageLimitsAPIKey(acc)
+	}
+
 	arn := strings.TrimSpace(acc.ProfileArn)
 	if arn == "" {
 		return nil, fmt.Errorf("profileArn required for GetUsageLimits")
@@ -112,49 +124,24 @@ func tokenTypeHeader(authMethod string) string {
 	}
 }
 
-// StartQuotaPoller periodically refreshes each account's quota via GetUsageLimits.
-// The AGENTIC_REQUEST breakdown drives quota-aware selection. Best-effort:
-// failures are logged and never block the proxy.
-func StartQuotaPoller(cfg *config.Config, interval time.Duration) {
-	if interval <= 0 {
-		interval = 5 * time.Minute
-	}
-	go func() {
-		// Initial poll shortly after startup.
-		time.Sleep(3 * time.Second)
-		pollAll(cfg)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for range ticker.C {
-			pollAll(cfg)
-		}
-	}()
-}
+// StartBackgroundRefresh and quota refresh are triggered on demand (admin panel
+// "test"/"refresh quota" actions and per-request accounting) rather than by a
+// background poller — the auto-check loop was removed in favor of SSE-pushed,
+// action-driven updates.
 
-func pollAll(cfg *config.Config) {
-	for i := range cfg.Accounts {
-		acc := &cfg.Accounts[i]
-		if !acc.Enabled || acc.ProfileArn == "" {
-			continue
-		}
-		resp, err := FetchUsageLimits(acc)
-		if err != nil {
-			log.Printf("[quota] %s (%s): %v", acc.ID, acc.Email, err)
-			continue
-		}
-		limit, current, unit := pickAgenticBreakdown(resp)
-		var nextReset int64
-		if resp.NextDateReset != "" {
-			if ts, err := resp.NextDateReset.Int64(); err == nil {
-				nextReset = ts
-			}
-		}
-		if limit > 0 {
-			cfg.UpdateQuota(acc.ID, limit, current, nextReset)
-			log.Printf("[quota] %s: %.2f/%.2f %s used (%.0f%%)",
-				acc.Email, current, limit, unit, current/limit*100)
+// QuotaFromUsage extracts the chat-quota limit, current usage, and next reset
+// timestamp from a GetUsageLimits response. Returns zeros when unavailable.
+func QuotaFromUsage(resp *UsageLimitsResponse) (limit, current float64, nextResetUnix int64) {
+	if resp == nil {
+		return 0, 0, 0
+	}
+	limit, current, _ = pickAgenticBreakdown(resp)
+	if resp.NextDateReset != "" {
+		if ts, err := resp.NextDateReset.Int64(); err == nil {
+			nextResetUnix = ts
 		}
 	}
+	return limit, current, nextResetUnix
 }
 
 // pickAgenticBreakdown finds the AGENTIC_REQUEST breakdown (chat quota),

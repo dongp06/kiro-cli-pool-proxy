@@ -5,7 +5,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
+	"kiro-cli-pool-proxy/auth"
 	"kiro-cli-pool-proxy/config"
 	"kiro-cli-pool-proxy/kirolocal"
 	"kiro-cli-pool-proxy/pool"
@@ -22,6 +24,7 @@ type AdminHandler struct {
 	cfg  *config.Config
 	pool *pool.Pool
 	logs *LogStore
+	hub  *EventHub
 	dist fs.FS // built frontend (proxy/webdist)
 
 	mu       sync.Mutex
@@ -29,9 +32,9 @@ type AdminHandler struct {
 }
 
 // NewAdminHandler creates the admin panel handler.
-func NewAdminHandler(cfg *config.Config, p *pool.Pool, logs *LogStore) *AdminHandler {
+func NewAdminHandler(cfg *config.Config, p *pool.Pool, logs *LogStore, hub *EventHub) *AdminHandler {
 	sub, _ := fs.Sub(adminDist, "webdist")
-	a := &AdminHandler{cfg: cfg, pool: p, logs: logs, dist: sub, sessions: make(map[string]time.Time)}
+	a := &AdminHandler{cfg: cfg, pool: p, logs: logs, hub: hub, dist: sub, sessions: make(map[string]time.Time)}
 	go a.gcSessions()
 	return a
 }
@@ -153,6 +156,14 @@ func (a *AdminHandler) serveAPI(w http.ResponseWriter, r *http.Request, route st
 	case route == "accounts/import-local" && r.Method == http.MethodPost:
 		a.apiImportLocal(w, r)
 
+	case strings.HasPrefix(route, "accounts/") && strings.HasSuffix(route, "/test") && r.Method == http.MethodPost:
+		id := strings.TrimSuffix(strings.TrimPrefix(route, "accounts/"), "/test")
+		a.apiTestAccount(w, r, id)
+
+	case strings.HasPrefix(route, "accounts/") && strings.HasSuffix(route, "/refresh-quota") && r.Method == http.MethodPost:
+		id := strings.TrimSuffix(strings.TrimPrefix(route, "accounts/"), "/refresh-quota")
+		a.apiRefreshQuota(w, r, id)
+
 	case strings.HasPrefix(route, "accounts/") && r.Method == http.MethodPatch:
 		a.apiToggleAccount(w, r, strings.TrimPrefix(route, "accounts/"))
 
@@ -161,6 +172,7 @@ func (a *AdminHandler) serveAPI(w http.ResponseWriter, r *http.Request, route st
 		if a.cfg.RemoveAccount(id) {
 			a.cfg.Save()
 			a.pool.Reload()
+			a.publishAccounts()
 			writeJSON(w, 200, map[string]bool{"ok": true})
 		} else {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
@@ -234,6 +246,47 @@ func (a *AdminHandler) serveAPI(w http.ResponseWriter, r *http.Request, route st
 	case route == "logs" && r.Method == http.MethodDelete:
 		a.logs.Clear()
 		writeJSON(w, 200, map[string]bool{"ok": true})
+
+	case route == "events" && r.Method == http.MethodGet:
+		a.apiEvents(w, r)
+
+	case route == "models/sync" && r.Method == http.MethodPost:
+		a.apiSyncModels(w, r)
+
+	case route == "models" && r.Method == http.MethodGet:
+		writeJSON(w, 200, EffectiveKiroModels())
+
+	case strings.HasPrefix(route, "accounts/") && strings.HasSuffix(route, "/test-model") && r.Method == http.MethodPost:
+		id := strings.TrimSuffix(strings.TrimPrefix(route, "accounts/"), "/test-model")
+		a.apiTestModel(w, r, id)
+
+	// --- Kiro login flows ---
+	case route == "auth/iam-sso/start" && r.Method == http.MethodPost:
+		a.apiStartIamSso(w, r)
+
+	case route == "auth/iam-sso/complete" && r.Method == http.MethodPost:
+		a.apiCompleteIamSso(w, r)
+
+	case route == "auth/builderid/start" && r.Method == http.MethodPost:
+		a.apiStartBuilderId(w, r)
+
+	case route == "auth/builderid/poll" && r.Method == http.MethodPost:
+		a.apiPollBuilderId(w, r)
+
+	case route == "auth/sso-token" && r.Method == http.MethodPost:
+		a.apiImportSsoToken(w, r)
+
+	case route == "auth/microsoft-sso/start" && r.Method == http.MethodPost:
+		a.apiStartMicrosoftSso(w, r)
+
+	case route == "auth/microsoft-sso/complete" && r.Method == http.MethodPost:
+		a.apiCompleteMicrosoftSso(w, r)
+
+	case route == "auth/microsoft-sso/cancel" && r.Method == http.MethodPost:
+		a.apiCancelMicrosoftSso(w, r)
+
+	case route == "auth/api-key" && r.Method == http.MethodPost:
+		a.apiImportApiKey(w, r)
 
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})
@@ -353,6 +406,7 @@ func (a *AdminHandler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 	a.cfg.AddAccount(acc)
 	a.cfg.Save()
 	a.pool.Reload()
+	a.publishAccounts()
 	writeJSON(w, 200, toView(acc))
 }
 
@@ -364,6 +418,7 @@ func (a *AdminHandler) apiToggleAccount(w http.ResponseWriter, r *http.Request, 
 	if a.cfg.SetAccountEnabled(id, body.Enabled) {
 		a.cfg.Save()
 		a.pool.Reload()
+		a.publishAccounts()
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	} else {
 		writeJSON(w, 404, map[string]string{"error": "not found"})
@@ -391,10 +446,94 @@ func (a *AdminHandler) apiImportLocal(w http.ResponseWriter, r *http.Request) {
 	a.cfg.AddAccount(*acc)
 	a.cfg.Save()
 	a.pool.Reload()
+	a.publishAccounts()
 	writeJSON(w, 200, toView(*acc))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// prepareAccount refreshes an expiring token and resolves a missing profile ARN,
+// persisting both back to config. Returns the up-to-date account copy.
+func (a *AdminHandler) prepareAccount(id string) (config.Account, error) {
+	acc, ok := a.cfg.GetAccountByID(id)
+	if !ok {
+		return config.Account{}, fmt.Errorf("not found")
+	}
+	if auth.NeedsRefresh(&acc) {
+		if err := auth.RefreshToken(&acc); err != nil {
+			return acc, fmt.Errorf("token refresh failed: %w", err)
+		}
+		a.cfg.UpdateAccountToken(acc.ID, acc.AccessToken, acc.RefreshToken, acc.ExpiresAt)
+	}
+	// api_key (ksk_) accounts are region-bound and have no profileArn; the
+	// control-plane GET form authenticates by key alone. Skip ARN resolution.
+	if acc.AuthMethod != "api_key" && strings.TrimSpace(acc.ProfileArn) == "" {
+		arn, err := auth.ResolveProfileArn(&acc)
+		if err != nil {
+			return acc, fmt.Errorf("resolve profileArn: %w", err)
+		}
+		acc.ProfileArn = arn
+		if acc.Region == "" {
+			acc.Region = RegionFromProfileArn(arn)
+		}
+		a.cfg.SetAccountProfileArn(acc.ID, arn)
+	}
+	a.cfg.Save()
+	return acc, nil
+}
+
+// apiTestAccount validates an account by resolving its ARN and calling
+// GetUsageLimits — the same path the proxy relies on. Returns ok/error.
+func (a *AdminHandler) apiTestAccount(w http.ResponseWriter, r *http.Request, id string) {
+	acc, err := a.prepareAccount(id)
+	if err != nil {
+		if err.Error() == "not found" {
+			writeJSON(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if _, err := auth.FetchUsageLimits(&acc); err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	a.pool.Reload()
+	writeJSON(w, 200, map[string]any{"ok": true, "email": acc.Email, "hasProfileArn": true})
+}
+
+// apiRefreshQuota resolves the ARN if needed then refreshes the account's quota
+// snapshot from GetUsageLimits. Returns the updated account view.
+func (a *AdminHandler) apiRefreshQuota(w http.ResponseWriter, r *http.Request, id string) {
+	acc, err := a.prepareAccount(id)
+	if err != nil {
+		if err.Error() == "not found" {
+			writeJSON(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	resp, err := auth.FetchUsageLimits(&acc)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	limit, current, nextReset := auth.QuotaFromUsage(resp)
+	if limit > 0 {
+		a.cfg.UpdateQuota(acc.ID, limit, current, nextReset)
+		a.cfg.Save()
+	}
+	if updated, ok := a.cfg.GetAccountByID(id); ok {
+		acc = updated
+	}
+	a.pool.Reload()
+	view := toView(acc)
+	if a.hub != nil {
+		a.hub.Publish(Event{Type: "quota", Data: view})
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "account": view})
 }

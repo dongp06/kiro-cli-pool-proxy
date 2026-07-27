@@ -1,26 +1,37 @@
-import { useCallback, useEffect, useState } from 'react'
-import { api, Unauthorized, type LogEntry } from '../api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api, Unauthorized, type LogEntry, type ServerEvent } from '../api'
 import type { T } from '../i18n'
 import type { ToastFn } from '../context'
 import { cls } from '../lib/styles'
 import { fmtNum, fmtClock } from '../lib/format'
 import * as I from '../icons'
 
+const MAX_LOGS = 500
+
 export function LogsTab({ t, toast, onUnauth }: { t: T; toast: ToastFn; onUnauth: () => void }) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [filter, setFilter] = useState('all')
-  const [auto, setAuto] = useState(false)
+  const [live, setLive] = useState(true)
+  const liveRef = useRef(live)
+  liveRef.current = live
 
   const load = useCallback(async () => {
     try { setLogs(await api.logs()) }
     catch (e) { if (e instanceof Unauthorized) onUnauth() }
   }, [onUnauth])
   useEffect(() => { load() }, [load])
+
+  // Realtime: prepend new log frames as they arrive (respecting the live toggle).
   useEffect(() => {
-    if (!auto) return
-    const iv = setInterval(load, 4000)
-    return () => clearInterval(iv)
-  }, [auto, load])
+    const es = api.events((ev: ServerEvent) => {
+      if (ev.type !== 'log' || !liveRef.current) return
+      const entry = ev.data as LogEntry
+      if (entry && typeof entry.status === 'number') {
+        setLogs((prev) => [entry, ...prev].slice(0, MAX_LOGS))
+      }
+    })
+    return () => es.close()
+  }, [])
 
   const clear = async () => { await api.clearLogs(); toast(t('logs.cleared')); load() }
   const shown = logs.filter((l) => filter === 'all' || (filter === 'success' ? l.status < 400 : l.status >= 400))
@@ -36,8 +47,10 @@ export function LogsTab({ t, toast, onUnauth }: { t: T; toast: ToastFn; onUnauth
             <option value="error">{t('logs.filterError')}</option>
           </select>
           <button className={`${cls.btn} ${cls.sm}`} onClick={load}><I.Refresh /> {t('logs.refresh')}</button>
-          <label className="flex items-center gap-1.5 text-xs text-[var(--muted)] cursor-pointer select-none">
-            <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> {t('logs.auto')}
+          <label className="flex items-center gap-1.5 text-xs text-[var(--muted)] cursor-pointer select-none" title={t('logs.liveHint')}>
+            <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} />
+            <span className={`inline-block w-2 h-2 rounded-full ${live ? 'bg-[var(--ok)]' : 'bg-[var(--faint)]'}`} style={live ? { animation: 'pulse 2s infinite' } : undefined} aria-hidden="true" />
+            {t('logs.live')}
           </label>
           <button className={`${cls.btn} ${cls.btnDanger} ${cls.sm}`} onClick={clear}><I.Trash /> {t('logs.clear')}</button>
         </div>

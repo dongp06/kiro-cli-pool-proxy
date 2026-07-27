@@ -35,16 +35,20 @@ type Server struct {
 	client *http.Client
 	admin  *AdminHandler
 	logs   *LogStore
+	hub    *EventHub
 }
 
 // NewServer creates a plain reverse-proxy server.
 func NewServer(cfg *config.Config, p *pool.Pool) *Server {
 	logs := NewLogStore(500)
+	hub := NewEventHub()
+	logs.SetHub(hub)
 	return &Server{
-		pool:  p,
-		cfg:   cfg,
-		logs:  logs,
-		admin: NewAdminHandler(cfg, p, logs),
+		pool: p,
+		cfg:  cfg,
+		logs: logs,
+		hub:  hub,
+		admin: NewAdminHandler(cfg, p, logs, hub),
 		client: &http.Client{
 			Timeout: 10 * time.Minute,
 			Transport: &http.Transport{
@@ -200,6 +204,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Rewrite profileArn in the body for this account.
 		newBody := RewriteProfileArn(body, account.ProfileArn)
+		if isChat && account.AuthMethod == "api_key" {
+			// ksk keys have no profileArn; the CodeWhisperer data-plane rejects
+			// a stray one, so strip whatever the client sent.
+			newBody = RemoveProfileArn(newBody)
+		}
 
 		// RE/debug: dump the (pre-swap) chat request body once.
 		if dbg := os.Getenv("KPP_DEBUG_BODY"); dbg != "" && isChat {
@@ -215,14 +224,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			region = "us-east-1"
 		}
 		var upstreamHost string
-		if isChat {
-			upstreamHost = runtimeHostForRegion(region)
+		var upstreamURL string
+		if isChat && account.AuthMethod == "api_key" {
+			// API keys are region-bound and only accepted at the CodeWhisperer
+			// data-plane (q.{region}.amazonaws.com/generateAssistantResponse),
+			// not runtime.*.kiro.dev. Rewrite host + path accordingly.
+			u := apiKeyChatURL(region)
+			upstreamHost = hostFromURL(u)
+			upstreamURL = u
 		} else {
-			upstreamHost = managementHostForRegion(region)
-		}
-		upstreamURL := "https://" + upstreamHost + r.URL.Path
-		if r.URL.RawQuery != "" {
-			upstreamURL += "?" + r.URL.RawQuery
+			if isChat {
+				upstreamHost = runtimeHostForRegion(region)
+			} else {
+				upstreamHost = managementHostForRegion(region)
+			}
+			upstreamURL = "https://" + upstreamHost + r.URL.Path
+			if r.URL.RawQuery != "" {
+				upstreamURL += "?" + r.URL.RawQuery
+			}
 		}
 
 		upReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL,
@@ -243,6 +262,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upReq.Header.Set("Authorization", "Bearer "+account.AccessToken)
 		upReq.Header.Set("Host", upstreamHost)
 		upReq.Host = upstreamHost
+		// API-key chat hits the CodeWhisperer data-plane, which expects
+		// application/json rather than the CLI's x-amz-json-1.0 content type.
+		if isChat && account.AuthMethod == "api_key" {
+			upReq.Header.Set("Content-Type", "application/json")
+		}
 		if tt := TokenTypeHeader(account.AuthMethod); tt != "" {
 			upReq.Header.Set("tokentype", tt)
 		} else {
@@ -357,6 +381,11 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 		s.cfg.UpdateQuotaCurrentDelta(account.ID, 1) // one invocation
 		if apiKeyID != "" {
 			s.cfg.RecordKeyUsage(apiKeyID, sink.Credits)
+		}
+		if s.hub != nil {
+			if updated, ok := s.cfg.GetAccountByID(account.ID); ok {
+				s.hub.Publish(Event{Type: "quota", Data: toView(updated)})
+			}
 		}
 
 		acctLabel := account.Email
