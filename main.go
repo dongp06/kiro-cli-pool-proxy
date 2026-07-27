@@ -78,6 +78,25 @@ func main() {
 
 	log.Printf("KiroPool listening on %s · %d accounts · strategy=%s · admin %s/admin", cfg.ListenAddr, enabledCount, cfg.Strategy, proxyURL)
 
+	if cfg.GetAdminPassword() == "" {
+		// Never leave the panel unprotected: auto-generate a strong password,
+		// persist it to config, and print it once so the operator can log in.
+		pw := config.GenerateAdminPassword()
+		if cfg.SetAdminPassword(pw) {
+			if err := cfg.Save(); err != nil {
+				log.Printf("WARNING: generated an admin password but failed to save it to %s: %v — set one in the panel or export %s.", *configPath, err, config.AdminPasswordEnvKey)
+			} else {
+				log.Printf("No admin password was set; generated one and saved it to %s.", *configPath)
+				log.Printf("  >>> ADMIN PASSWORD: %s", pw)
+				log.Printf("  >>> Log in at %s/admin with this password, then change it from Settings. It is stored in %s.", proxyURL, *configPath)
+			}
+		} else {
+			log.Printf("Admin password is pinned by %s (not editable from the panel).", config.AdminPasswordEnvKey)
+		}
+	} else if config.AdminPasswordFromEnv() {
+		log.Printf("Admin password sourced from %s (not editable from the panel).", config.AdminPasswordEnvKey)
+	}
+
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}

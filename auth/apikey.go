@@ -14,12 +14,10 @@ const KiroAPIKeyPrefix = "ksk_"
 
 // kiroAPIKeyProbeRegions is the ordered set of regions probed when a ksk_ key is
 // imported without an explicit region. Kiro API keys are bound to the region
-// they were minted in; calling the wrong region's control plane returns a 4xx.
-// Probing management.{region}.kiro.dev/getUsageLimits with the key finds the
-// region that actually owns it. Only the public commercial control-plane hosts
-// are probed — management.{region}.kiro.dev exists solely for us-east-1 and
-// eu-central-1, so probing any other region just fails DNS ("no such host").
-var kiroAPIKeyProbeRegions = []string{"us-east-1", "eu-central-1"}
+// they were minted in; calling the wrong region's control plane returns 403
+// "Invalid token". Probing management.{region}.kiro.dev/getUsageLimits with the
+// key finds the region that actually owns it. Mirrors Kiro-Go's probe set.
+var kiroAPIKeyProbeRegions = []string{"us-east-1", "eu-central-1", "ap-southeast-1"}
 
 // IsKiroAPIKey reports whether a credential string looks like a Kiro API key.
 func IsKiroAPIKey(s string) bool {
@@ -104,8 +102,11 @@ func checkKiroAPIKeyRegion(key, region string) (*KiroAPIKeyProbeResult, error) {
 }
 
 // getUsageLimitsAPIKey issues the region-bound GET getUsageLimits form used for
-// api_key (ksk_) credentials, which have no profileArn. Returns the parsed
-// response on HTTP 200; a non-200 or transport error otherwise.
+// api_key (ksk_) credentials, which have no profileArn. Kiro API keys are
+// authenticated by the management.{region}.kiro.dev CONTROL plane (same host as
+// OAuth/IDP GetUsageLimits) with a capitalized TokenType: API_KEY header — the
+// CodeWhisperer data plane rejects them with 403 "bearer token invalid".
+// Returns the parsed response on HTTP 200; a non-200 or transport error otherwise.
 func getUsageLimitsAPIKey(key, region string) (*UsageLimitsResponse, error) {
 	url := fmt.Sprintf(
 		"https://%s/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true",

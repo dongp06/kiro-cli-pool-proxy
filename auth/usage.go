@@ -60,7 +60,8 @@ func managementHost(region string) string {
 // FetchUsageLimits calls GetUsageLimits for an account.
 // Target: AmazonCodeWhispererService.GetUsageLimits, JSON POST, {origin, profileArn}.
 // For api_key (ksk_) accounts there is no profileArn: the region-bound GET form
-// (management.{region}.kiro.dev/getUsageLimits?...) with TokenType: API_KEY is used.
+// (management.{region}.kiro.dev control plane) with a capitalized TokenType:
+// API_KEY header is used instead.
 func FetchUsageLimits(acc *config.Account) (*UsageLimitsResponse, error) {
 	if acc.AuthMethod == "api_key" {
 		return fetchUsageLimitsAPIKey(acc)

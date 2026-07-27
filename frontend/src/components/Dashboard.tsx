@@ -31,6 +31,8 @@ export function Dashboard(props: {
   const [ov, setOv] = useState<Overview | null>(null)
   const [accs, setAccs] = useState<Account[]>([])
   const [listenAddr, setListenAddr] = useState('')
+  const [hasPassword, setHasPassword] = useState(false)
+  const [passwordEnv, setPasswordEnv] = useState(false)
   const [refreshMs, setRefreshMs] = useState<number>(() => {
     const v = localStorage.getItem('kpp_refresh')
     return v !== null ? +v * 1000 : 8000
@@ -47,6 +49,7 @@ export function Dashboard(props: {
     try {
       const [o, a, s] = await Promise.all([api.overview(), api.accounts(), api.settings()])
       setOv(o); setAccs(a); setListenAddr(s.listenAddr)
+      setHasPassword(s.adminPassword); setPasswordEnv(s.passwordEnv)
     } catch (e) {
       if (e instanceof Unauthorized) props.onUnauth()
     }
@@ -210,6 +213,7 @@ export function Dashboard(props: {
           <SettingsTab
             strategy={ov?.strategy || 'smart'} onStrategy={setStrategy}
             listenAddr={listenAddr} theme={theme} t={t} privacy={privacy.on} toast={props.toast}
+            hasPassword={hasPassword} passwordEnv={passwordEnv} onPasswordSaved={refresh}
             refreshSec={refreshMs / 1000}
             onRefresh={(v) => { setRefreshMs(v * 1000); localStorage.setItem('kpp_refresh', String(v)) }} />
         )}

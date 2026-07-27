@@ -29,6 +29,8 @@ export interface Account {
 export interface Settings {
   strategy: string
   listenAddr: string
+  adminPassword: boolean
+  passwordEnv: boolean
 }
 
 export interface ApiKey {
@@ -104,6 +106,9 @@ export const api = {
   settings: () => req('settings').then((r) => r.json() as Promise<Settings>),
   setStrategy: (strategy: string) =>
     req('settings', { method: 'PATCH', body: JSON.stringify({ strategy }) }),
+  setPassword: (current: string, newPassword: string) =>
+    req('settings/password', { method: 'POST', body: JSON.stringify({ current, new: newPassword }) }).then(
+      async (r) => ({ ok: r.ok, data: (await r.json().catch(() => ({}))) as { error?: string } })),
   keys: () => req('keys').then((r) => r.json() as Promise<ApiKey[]>),
   createKey: (name: string, creditLimit: number) =>
     req('keys', { method: 'POST', body: JSON.stringify({ name, creditLimit }) }).then((r) => r.json() as Promise<ApiKey>),

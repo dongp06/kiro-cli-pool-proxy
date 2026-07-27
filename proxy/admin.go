@@ -12,8 +12,10 @@ import (
 	"kiro-cli-pool-proxy/kirolocal"
 	"kiro-cli-pool-proxy/pool"
 	"mime"
+	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,17 +31,49 @@ type AdminHandler struct {
 
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
+
+	// Login brute-force throttle, keyed by client IP.
+	loginFails map[string]*loginAttempts
 }
+
+// loginAttempts tracks failed admin logins from one client IP so we can lock it
+// out after too many misses within a window.
+type loginAttempts struct {
+	count       int
+	last        time.Time
+	lockedUntil time.Time
+}
+
+const (
+	maxLoginFails = 5                // failures before lockout
+	loginLockout  = 5 * time.Minute  // lockout duration once tripped
+	loginWindow   = 15 * time.Minute // idle window after which the counter resets
+)
 
 // NewAdminHandler creates the admin panel handler.
 func NewAdminHandler(cfg *config.Config, p *pool.Pool, logs *LogStore, hub *EventHub) *AdminHandler {
 	sub, _ := fs.Sub(adminDist, "webdist")
-	a := &AdminHandler{cfg: cfg, pool: p, logs: logs, hub: hub, dist: sub, sessions: make(map[string]time.Time)}
+	a := &AdminHandler{cfg: cfg, pool: p, logs: logs, hub: hub, dist: sub, sessions: make(map[string]time.Time), loginFails: make(map[string]*loginAttempts)}
 	go a.gcSessions()
 	return a
 }
 
 const adminCookie = "kpp_admin"
+
+// adminSecurityHeaders applies defensive headers to every admin response.
+// The panel is a self-contained SPA (no external scripts, styles, or frames),
+// so a strict same-origin CSP is safe and blocks injected/remote content.
+func adminSecurityHeaders(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Content-Security-Policy",
+		"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+	if isTLS(r) {
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
+}
 
 func (a *AdminHandler) gcSessions() {
 	for range time.Tick(10 * time.Minute) {
@@ -74,6 +108,59 @@ func (a *AdminHandler) validSession(tok string) bool {
 	return ok && time.Now().Before(exp)
 }
 
+// clientIP extracts a best-effort client identifier for rate-limiting. It does
+// NOT trust X-Forwarded-For by default (spoofable) — the remote address is the
+// only value an attacker cannot forge on a direct connection.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// loginLocked reports whether the given IP is currently locked out, and if so
+// how long remains. Expired counters are pruned lazily.
+func (a *AdminHandler) loginLocked(ip string) (bool, time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	att := a.loginFails[ip]
+	if att == nil {
+		return false, 0
+	}
+	now := time.Now()
+	if !att.lockedUntil.IsZero() && now.Before(att.lockedUntil) {
+		return true, att.lockedUntil.Sub(now)
+	}
+	return false, 0
+}
+
+// registerLoginFail records a failed attempt for the IP and trips a lockout once
+// the threshold is crossed.
+func (a *AdminHandler) registerLoginFail(ip string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	att := a.loginFails[ip]
+	if att == nil || now.Sub(att.last) > loginWindow {
+		att = &loginAttempts{}
+		a.loginFails[ip] = att
+	}
+	att.last = now
+	att.count++
+	if att.count >= maxLoginFails {
+		att.lockedUntil = now.Add(loginLockout)
+		att.count = 0
+	}
+}
+
+// clearLoginFails resets the throttle for an IP after a successful login.
+func (a *AdminHandler) clearLoginFails(ip string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.loginFails, ip)
+}
+
 // authed returns true if the request carries a valid session, OR if admin auth
 // is disabled (no password configured).
 func (a *AdminHandler) authed(r *http.Request) bool {
@@ -89,6 +176,7 @@ func (a *AdminHandler) authed(r *http.Request) bool {
 
 // ServeHTTP routes /admin and /admin/api/*.
 func (a *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	adminSecurityHeaders(w, r)
 	path := r.URL.Path
 
 	// API routes
@@ -180,9 +268,14 @@ func (a *AdminHandler) serveAPI(w http.ResponseWriter, r *http.Request, route st
 
 	case route == "settings" && r.Method == http.MethodGet:
 		writeJSON(w, 200, map[string]any{
-			"strategy":   a.cfg.GetStrategy(),
-			"listenAddr": a.cfg.GetListenAddr(),
+			"strategy":      a.cfg.GetStrategy(),
+			"listenAddr":    a.cfg.GetListenAddr(),
+			"adminPassword": a.cfg.GetAdminPassword() != "",
+			"passwordEnv":   config.AdminPasswordFromEnv(),
 		})
+
+	case route == "settings/password" && r.Method == http.MethodPost:
+		a.apiSetPassword(w, r)
 
 	case route == "settings" && r.Method == http.MethodPatch:
 		var body struct {
@@ -294,6 +387,13 @@ func (a *AdminHandler) serveAPI(w http.ResponseWriter, r *http.Request, route st
 }
 
 func (a *AdminHandler) apiLogin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if locked, remain := a.loginLocked(ip); locked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(remain.Seconds())+1))
+		writeJSON(w, 429, map[string]string{"error": "too many attempts, try again later"})
+		return
+	}
+
 	var body struct {
 		Password string `json:"password"`
 	}
@@ -302,25 +402,77 @@ func (a *AdminHandler) apiLogin(w http.ResponseWriter, r *http.Request) {
 	pw := a.cfg.GetAdminPassword()
 	if pw == "" {
 		// No password set — issue a session anyway.
-		a.setSessionCookie(w, a.newSession())
+		a.setSessionCookie(w, r, a.newSession())
 		writeJSON(w, 200, map[string]bool{"ok": true})
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(pw)) != 1 {
+		a.registerLoginFail(ip)
 		writeJSON(w, 401, map[string]string{"error": "wrong password"})
 		return
 	}
-	a.setSessionCookie(w, a.newSession())
+	a.clearLoginFails(ip)
+	a.setSessionCookie(w, r, a.newSession())
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func (a *AdminHandler) setSessionCookie(w http.ResponseWriter, tok string) {
+// apiSetPassword sets or changes the admin panel password. Requires the current
+// password when one is already set (an authenticated session alone is not
+// enough — this blocks a hijacked session from silently locking out the owner).
+// Refused when the password is pinned by the environment.
+func (a *AdminHandler) apiSetPassword(w http.ResponseWriter, r *http.Request) {
+	if config.AdminPasswordFromEnv() {
+		writeJSON(w, 409, map[string]string{"error": "password is set via environment and cannot be changed here"})
+		return
+	}
+	var body struct {
+		Current string `json:"current"`
+		New     string `json:"new"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	if cur := a.cfg.GetAdminPassword(); cur != "" {
+		if subtle.ConstantTimeCompare([]byte(body.Current), []byte(cur)) != 1 {
+			writeJSON(w, 403, map[string]string{"error": "current password is wrong"})
+			return
+		}
+	}
+	newPw := strings.TrimSpace(body.New)
+	if newPw != "" && len(newPw) < 8 {
+		writeJSON(w, 400, map[string]string{"error": "password must be at least 8 characters"})
+		return
+	}
+	a.cfg.SetAdminPassword(newPw)
+	a.cfg.Save()
+
+	// Invalidate all sessions so a stolen cookie can't outlive a rotation, then
+	// re-issue a fresh session for this caller (if a password remains set).
+	a.mu.Lock()
+	a.sessions = make(map[string]time.Time)
+	a.mu.Unlock()
+	if newPw != "" {
+		a.setSessionCookie(w, r, a.newSession())
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// isTLS reports whether the request reached us over HTTPS, either directly or
+// via a terminating proxy that set X-Forwarded-Proto.
+func isTLS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func (a *AdminHandler) setSessionCookie(w http.ResponseWriter, r *http.Request, tok string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookie,
 		Value:    tok,
 		Path:     "/admin",
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		Secure:   isTLS(r),
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   12 * 3600,
 	})
 }

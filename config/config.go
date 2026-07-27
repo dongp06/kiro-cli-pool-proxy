@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,6 +25,35 @@ func GenerateMachineId() string {
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// adminPasswordAlphabet is the character set for auto-generated admin passwords.
+// It omits visually ambiguous characters (0/O, 1/l/I) so an operator can copy the
+// password from a terminal without transcription errors.
+const adminPasswordAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+
+// GenerateAdminPassword returns a cryptographically random password suitable for
+// protecting the admin panel. It uses rejection sampling over an unambiguous
+// alphabet to avoid modulo bias.
+func GenerateAdminPassword() string {
+	const n = 24
+	out := make([]byte, n)
+	buf := make([]byte, 1)
+	// Largest multiple of len(alphabet) that fits in a byte; values at or above
+	// this bound are rejected to keep the distribution uniform.
+	limit := byte(256 - (256 % len(adminPasswordAlphabet)))
+	for i := 0; i < n; {
+		if _, err := rand.Read(buf); err != nil {
+			// crypto/rand should never fail; degrade to a wide-range fallback.
+			return fmt.Sprintf("kpp-%016x-%016x", time.Now().UnixNano(), time.Now().Unix())
+		}
+		if buf[0] >= limit {
+			continue
+		}
+		out[i] = adminPasswordAlphabet[int(buf[0])%len(adminPasswordAlphabet)]
+		i++
+	}
+	return string(out)
 }
 
 // GetProxyURL returns the outbound HTTP proxy URL used by auth flows.
@@ -325,11 +355,41 @@ func (c *Config) GetListenAddr() string {
 	return c.ListenAddr
 }
 
+// AdminPasswordEnvKey is the environment variable that overrides the admin
+// panel password. When set (non-empty) it takes precedence over the config
+// file, so an operator can enforce auth on a remote box without writing the
+// secret to disk. Mirrors kiro-go's ADMIN_PASSWORD, namespaced to this project.
+const AdminPasswordEnvKey = "KPP_ADMIN_PASSWORD"
+
 // GetAdminPassword returns the admin panel password (empty = no auth).
+// The KPP_ADMIN_PASSWORD environment variable, if set, overrides the config
+// value and cannot be changed from the panel.
 func (c *Config) GetAdminPassword() string {
+	if env := strings.TrimSpace(os.Getenv(AdminPasswordEnvKey)); env != "" {
+		return env
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.AdminPassword
+}
+
+// AdminPasswordFromEnv reports whether the admin password is being supplied by
+// the environment (and therefore is not editable from the panel).
+func AdminPasswordFromEnv() bool {
+	return strings.TrimSpace(os.Getenv(AdminPasswordEnvKey)) != ""
+}
+
+// SetAdminPassword updates the config-file admin password. A no-op when the
+// password is pinned by KPP_ADMIN_PASSWORD (returns false); callers should not
+// let the panel edit an env-pinned secret.
+func (c *Config) SetAdminPassword(pw string) bool {
+	if AdminPasswordFromEnv() {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.AdminPassword = strings.TrimSpace(pw)
+	return true
 }
 
 // GetKiroModels returns a copy of the synced Kiro model id list (may be empty).
