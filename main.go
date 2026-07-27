@@ -79,22 +79,22 @@ func main() {
 	log.Printf("KiroPool listening on %s · %d accounts · strategy=%s · admin %s/admin", cfg.ListenAddr, enabledCount, cfg.Strategy, proxyURL)
 
 	if cfg.GetAdminPassword() == "" {
-		// Never leave the panel unprotected: auto-generate a strong password,
-		// persist it to config, and print it once so the operator can log in.
-		pw := config.GenerateAdminPassword()
-		if cfg.SetAdminPassword(pw) {
+		// Never leave the panel unprotected: seed the default password,
+		// persist it to config, and warn so the operator changes it.
+		if cfg.SetAdminPassword(config.DefaultAdminPassword) {
 			if err := cfg.Save(); err != nil {
-				log.Printf("WARNING: generated an admin password but failed to save it to %s: %v — set one in the panel or export %s.", *configPath, err, config.AdminPasswordEnvKey)
+				log.Printf("WARNING: set the default admin password but failed to save it to %s: %v — set one in the panel or export %s.", *configPath, err, config.AdminPasswordEnvKey)
 			} else {
-				log.Printf("No admin password was set; generated one and saved it to %s.", *configPath)
-				log.Printf("  >>> ADMIN PASSWORD: %s", pw)
-				log.Printf("  >>> Log in at %s/admin with this password, then change it from Settings. It is stored in %s.", proxyURL, *configPath)
+				log.Printf("No admin password was set; seeded the default %q into %s.", config.DefaultAdminPassword, *configPath)
+				log.Printf("  >>> Log in at %s/admin and CHANGE it from Settings before exposing the panel. Or export %s.", proxyURL, config.AdminPasswordEnvKey)
 			}
 		} else {
 			log.Printf("Admin password is pinned by %s (not editable from the panel).", config.AdminPasswordEnvKey)
 		}
 	} else if config.AdminPasswordFromEnv() {
 		log.Printf("Admin password sourced from %s (not editable from the panel).", config.AdminPasswordEnvKey)
+	} else if cfg.GetAdminPassword() == config.DefaultAdminPassword {
+		log.Printf("WARNING: admin panel is using the default password %q — change it from Settings before exposing the panel.", config.DefaultAdminPassword)
 	}
 
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
@@ -107,6 +107,7 @@ func createTemplateConfig(path string) {
   "listenAddr": "0.0.0.0:5000",
   "strategy": "smart",
   "poolKey": "",
+  "adminPassword": "changeme",
   "accounts": [
     {
       "id": "account-1",

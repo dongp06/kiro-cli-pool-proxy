@@ -27,34 +27,10 @@ func GenerateMachineId() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// adminPasswordAlphabet is the character set for auto-generated admin passwords.
-// It omits visually ambiguous characters (0/O, 1/l/I) so an operator can copy the
-// password from a terminal without transcription errors.
-const adminPasswordAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
-
-// GenerateAdminPassword returns a cryptographically random password suitable for
-// protecting the admin panel. It uses rejection sampling over an unambiguous
-// alphabet to avoid modulo bias.
-func GenerateAdminPassword() string {
-	const n = 24
-	out := make([]byte, n)
-	buf := make([]byte, 1)
-	// Largest multiple of len(alphabet) that fits in a byte; values at or above
-	// this bound are rejected to keep the distribution uniform.
-	limit := byte(256 - (256 % len(adminPasswordAlphabet)))
-	for i := 0; i < n; {
-		if _, err := rand.Read(buf); err != nil {
-			// crypto/rand should never fail; degrade to a wide-range fallback.
-			return fmt.Sprintf("kpp-%016x-%016x", time.Now().UnixNano(), time.Now().Unix())
-		}
-		if buf[0] >= limit {
-			continue
-		}
-		out[i] = adminPasswordAlphabet[int(buf[0])%len(adminPasswordAlphabet)]
-		i++
-	}
-	return string(out)
-}
+// DefaultAdminPassword is the admin panel password seeded into a fresh config
+// when none is set. Operators must change it (in the panel or via the
+// KPP_ADMIN_PASSWORD env var) before exposing the panel to production.
+const DefaultAdminPassword = "changeme"
 
 // GetProxyURL returns the outbound HTTP proxy URL used by auth flows.
 // The pool proxy does not currently route auth traffic through an upstream
