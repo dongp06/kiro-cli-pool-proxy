@@ -9,6 +9,9 @@ config.json
 *.exe
 *.exe~
 
+# Release artifacts
+/dist/
+
 # Certs (if any legacy)
 certs/
 

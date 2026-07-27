@@ -16,8 +16,10 @@ const KiroAPIKeyPrefix = "ksk_"
 // imported without an explicit region. Kiro API keys are bound to the region
 // they were minted in; calling the wrong region's control plane returns a 4xx.
 // Probing management.{region}.kiro.dev/getUsageLimits with the key finds the
-// region that actually owns it.
-var kiroAPIKeyProbeRegions = []string{"us-east-1", "eu-central-1", "ap-southeast-1"}
+// region that actually owns it. Only the public commercial control-plane hosts
+// are probed — management.{region}.kiro.dev exists solely for us-east-1 and
+// eu-central-1, so probing any other region just fails DNS ("no such host").
+var kiroAPIKeyProbeRegions = []string{"us-east-1", "eu-central-1"}
 
 // IsKiroAPIKey reports whether a credential string looks like a Kiro API key.
 func IsKiroAPIKey(s string) bool {
@@ -42,6 +44,7 @@ func ProbeKiroAPIKeyRegion(key, preferred string) (*KiroAPIKeyProbeResult, error
 	}
 	regions := kiroAPIKeyCandidateRegions(preferred)
 	lastErr := "unknown"
+	var httpErr string // prefer a real control-plane rejection over a transport/DNS error
 	for _, region := range regions {
 		res, err := checkKiroAPIKeyRegion(key, region)
 		if err == nil {
@@ -49,6 +52,12 @@ func ProbeKiroAPIKeyRegion(key, preferred string) (*KiroAPIKeyProbeResult, error
 			return res, nil
 		}
 		lastErr = err.Error()
+		if strings.HasPrefix(lastErr, "HTTP ") {
+			httpErr = lastErr
+		}
+	}
+	if httpErr != "" {
+		lastErr = httpErr
 	}
 	return nil, fmt.Errorf("API key not valid in any probed region (%s): %s",
 		strings.Join(regions, ", "), lastErr)
