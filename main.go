@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"kiro-cli-pool-proxy/auth"
@@ -22,7 +23,7 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
 			createTemplateConfig(*configPath)
 			fmt.Printf("Created template config at %s — edit it with your accounts, then re-run.\n", *configPath)
 			os.Exit(0)
@@ -108,21 +109,7 @@ func createTemplateConfig(path string) {
   "strategy": "smart",
   "poolKey": "",
   "adminPassword": "changeme",
-  "accounts": [
-    {
-      "id": "account-1",
-      "email": "user1@example.com",
-      "accessToken": "YOUR_ACCESS_TOKEN",
-      "refreshToken": "YOUR_REFRESH_TOKEN",
-      "clientId": "YOUR_CLIENT_ID",
-      "clientSecret": "YOUR_CLIENT_SECRET",
-      "authMethod": "idc",
-      "region": "us-east-1",
-      "profileArn": "arn:aws:codewhisperer:us-east-1:123456789:profile/xxxxxxxx",
-      "expiresAt": 0,
-      "enabled": true
-    }
-  ]
+  "accounts": []
 }
 `
 	os.WriteFile(path, []byte(template), 0600)
