@@ -76,22 +76,7 @@ func main() {
 	}
 	proxyURL := fmt.Sprintf("http://%s:%s", displayHost, port)
 
-	log.Printf("╔══════════════════════════════════════════════════════════════╗")
-	log.Printf("║   KiroPool  ·  Kiro account pool + Anthropic/OpenAI gateway  ║")
-	log.Printf("╠══════════════════════════════════════════════════════════════╣")
-	log.Printf("║   Listen:   %-48s ║", cfg.ListenAddr)
-	log.Printf("║   Accounts: %-48d ║", enabledCount)
-	log.Printf("║   Strategy: %-48s ║", cfg.Strategy)
-	log.Printf("╠══════════════════════════════════════════════════════════════╣")
-	log.Printf("║   Point kiro-cli at this proxy (no MITM/cert needed):        ║")
-	log.Printf("║   kiro-cli settings api.krs.service \\                        ║")
-	log.Printf("║     '{\"endpoint\":\"%s\",\"region\":\"us-east-1\"}'  ", proxyURL)
-	log.Printf("║   kiro-cli settings api.cps.service \\                        ║")
-	log.Printf("║     '{\"endpoint\":\"%s\",\"region\":\"us-east-1\"}'  ", proxyURL)
-	log.Printf("║   (or run ./set-endpoints.sh %s )      ", proxyURL)
-	log.Printf("╠══════════════════════════════════════════════════════════════╣")
-	log.Printf("║   Admin panel: %s/admin", proxyURL)
-	log.Printf("╚══════════════════════════════════════════════════════════════╝")
+	log.Printf("KiroPool listening on %s · %d accounts · strategy=%s · admin %s/admin", cfg.ListenAddr, enabledCount, cfg.Strategy, proxyURL)
 
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
