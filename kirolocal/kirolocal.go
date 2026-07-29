@@ -14,15 +14,42 @@ import (
 	"kiro-cli-pool-proxy/config"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-// DefaultDBPath returns the default kiro-cli SQLite path.
+// DefaultDBPath returns the default kiro-cli SQLite path for the current OS.
+//
+// kiro-cli stores its data per-platform:
+//
+//	Linux   $HOME/.local/share/kiro-cli/data.sqlite3  (XDG_DATA_HOME)
+//	macOS   $HOME/Library/Application Support/kiro-cli/data.sqlite3
+//	Windows %LOCALAPPDATA%\kiro-cli\data.sqlite3
+//
+// The KIRO_DATA_DIR environment variable overrides this and is always honored
+// when set, so operators can point at a custom store without code changes.
 func DefaultDBPath() string {
+	if dir := os.Getenv("KIRO_DATA_DIR"); dir != "" {
+		return filepath.Join(dir, "data.sqlite3")
+	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "kiro-cli", "data.sqlite3")
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "kiro-cli", "data.sqlite3")
+	case "windows":
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			return filepath.Join(localAppData, "kiro-cli", "data.sqlite3")
+		}
+		return filepath.Join(home, "AppData", "Local", "kiro-cli", "data.sqlite3")
+	default:
+		// Linux and other unixes follow the XDG Base Directory spec.
+		if dataHome := os.Getenv("XDG_DATA_HOME"); dataHome != "" {
+			return filepath.Join(dataHome, "kiro-cli", "data.sqlite3")
+		}
+		return filepath.Join(home, ".local", "share", "kiro-cli", "data.sqlite3")
+	}
 }
 
 // ReadAuthKV extracts all auth_kv rows via a pure-Go SQLite driver.
