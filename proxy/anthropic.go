@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Anthropic Messages API <-> Kiro GenerateAssistantResponse translation.
@@ -982,6 +983,14 @@ func (s *Server) recordChatUsage(account *config.Account, apiKeyID string, usage
 	if label == "" {
 		label = account.ID
 	}
+	keyLabel := apiKeyID
+	if k, ok := s.cfg.GetAPIKey(apiKeyID); ok && strings.TrimSpace(k.Name) != "" {
+		keyLabel = k.Name
+	}
+	s.logs.Add(LogEntry{
+		TimeUnix: time.Now().Unix(), Account: label, ApiKey: keyLabel,
+		Status: 200, Credits: usage, Kind: "chat",
+	})
 	log.Printf("[anthropic] OK account=%s credits=%.4f ctx=%.0f%%", label, usage, contextPct)
 }
 
