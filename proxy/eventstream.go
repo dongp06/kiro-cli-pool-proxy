@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -40,6 +42,25 @@ type MeteringSink struct {
 	Frames int
 	// Types records how many frames of each :event-type were seen (RE/debug).
 	Types map[string]int
+	// Token usage is reported by Kiro in metadata/usage payloads. Keep separate
+	// presence flags so a real zero is distinguishable from missing telemetry.
+	Tokens TokenMeter
+}
+
+// TokenMeter holds token counts reported by Kiro itself. Counts are
+// cumulative snapshots, so the last reported value for each side wins.
+type TokenMeter struct {
+	InputTokens     int
+	OutputTokens    int
+	SawInputTokens  bool
+	SawOutputTokens bool
+}
+
+func tokenCountPtr(value int, seen bool) *int {
+	if !seen {
+		return nil
+	}
+	return &value
 }
 
 // Write consumes bytes and parses any complete frames. Always returns len(p), nil.
@@ -98,6 +119,7 @@ func (m *MeteringSink) parseFrames() {
 func (m *MeteringSink) handleFrame(headers, payload []byte) {
 	eventType := eventTypeFromHeaders(headers)
 	eventType = canonicalEventType(eventType)
+	m.Tokens.Observe(payload)
 	if eventType != "" {
 		if m.Types == nil {
 			m.Types = map[string]int{}
@@ -119,6 +141,121 @@ func (m *MeteringSink) handleFrame(headers, payload []byte) {
 			}
 		}
 	}
+}
+
+// Observe extracts upstream-reported token counts from one Kiro event payload.
+// It intentionally never estimates from text or context percentage.
+func (m *TokenMeter) Observe(payload []byte) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	var event map[string]any
+	if decoder.Decode(&event) != nil {
+		return
+	}
+
+	candidates := []map[string]any{event}
+	collectTokenUsageMaps(event, &candidates)
+	for _, usage := range candidates {
+		if output, ok := readTokenCount(usage,
+			"outputTokens", "completionTokens", "totalOutputTokens",
+			"output_tokens", "completion_tokens", "total_output_tokens",
+		); ok {
+			m.OutputTokens = output
+			m.SawOutputTokens = true
+		}
+
+		if input, ok := readTokenCount(usage,
+			"inputTokens", "promptTokens", "totalInputTokens",
+			"input_tokens", "prompt_tokens", "total_input_tokens",
+		); ok {
+			m.InputTokens = input
+			m.SawInputTokens = true
+			continue
+		}
+
+		uncached, sawUncached := readTokenCount(usage, "uncachedInputTokens", "uncached_input_tokens")
+		cacheRead, sawCacheRead := readTokenCount(usage, "cacheReadInputTokens", "cache_read_input_tokens")
+		cacheWrite, sawCacheWrite := readTokenCount(usage,
+			"cacheWriteInputTokens", "cache_write_input_tokens",
+			"cacheCreationInputTokens", "cache_creation_input_tokens",
+		)
+		if sawUncached || sawCacheRead || sawCacheWrite {
+			m.InputTokens = uncached + cacheRead + cacheWrite
+			m.SawInputTokens = true
+			continue
+		}
+
+		if total, ok := readTokenCount(usage, "totalTokens", "total_tokens"); ok && m.SawOutputTokens && total >= m.OutputTokens {
+			m.InputTokens = total - m.OutputTokens
+			m.SawInputTokens = true
+		}
+	}
+}
+
+// collectTokenUsageMaps visits known usage containers deterministically. This
+// avoids map iteration order deciding which cumulative snapshot wins.
+func collectTokenUsageMaps(value any, out *[]map[string]any) {
+	switch v := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			child := v[key]
+			norm := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(key))
+			if norm == "usage" || norm == "tokenusage" {
+				if usage, ok := child.(map[string]any); ok {
+					*out = append(*out, usage)
+				}
+			}
+			collectTokenUsageMaps(child, out)
+		}
+	case []any:
+		for _, child := range v {
+			collectTokenUsageMaps(child, out)
+		}
+	}
+}
+
+func readTokenCount(value map[string]any, keys ...string) (int, bool) {
+	for _, key := range keys {
+		raw, ok := value[key]
+		if !ok {
+			continue
+		}
+		var count int64
+		var err error
+		switch n := raw.(type) {
+		case json.Number:
+			count, err = n.Int64()
+			if err != nil {
+				var f float64
+				f, err = n.Float64()
+				count = int64(f)
+			}
+		case float64:
+			count = int64(n)
+		case int:
+			count = int64(n)
+		case int64:
+			count = n
+		case string:
+			count, err = strconv.ParseInt(strings.TrimSpace(n), 10, 64)
+			if err != nil {
+				var f float64
+				f, err = strconv.ParseFloat(strings.TrimSpace(n), 64)
+				count = int64(f)
+			}
+		default:
+			continue
+		}
+		if err == nil && count >= 0 {
+			return int(count), true
+		}
+	}
+	return 0, false
 }
 
 // eventTypeFromHeaders decodes AWS EventStream headers and returns :event-type.
@@ -209,16 +346,16 @@ func creditFromPayload(payload []byte) (float64, bool) {
 	return findCredit(value)
 }
 
-// findCredit tolerates the wire-shape variations seen across Kiro runtimes:
-// flat/nested objects, arrays, and numeric values encoded as strings. Search
-// only fields named usage/credit(s), so unrelated numbers cannot be mistaken
-// for a charge. A present zero is valid and is still reported as found.
+// findCredit tolerates wrappers and numeric strings, but deliberately accepts
+// only Kiro's metering field named "usage". Aliases such as credit/credits are
+// not part of the observed wire contract and could misattribute other values.
+// A present zero is valid and is still reported as found.
 func findCredit(value any) (float64, bool) {
 	switch v := value.(type) {
 	case map[string]any:
 		for key, child := range v {
 			norm := strings.ToLower(strings.TrimSpace(key))
-			if norm == "usage" || norm == "credit" || norm == "credits" {
+			if norm == "usage" {
 				if n, ok := numericValue(child); ok {
 					return n, true
 				}
@@ -249,8 +386,6 @@ func numericValue(value any) (float64, bool) {
 	case string:
 		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
 		return f, err == nil
-	case map[string]any, []any:
-		return findCredit(n)
 	default:
 		return 0, false
 	}

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -752,6 +753,7 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, resp *http.Response, req
 	var usage float64
 	var contextPct float64
 	var sawMetering bool
+	var tokens TokenMeter
 
 	closeOpen := func() {
 		if openIndex >= 0 {
@@ -762,6 +764,7 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, resp *http.Response, req
 	}
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
+		tokens.Observe(payload)
 		switch et {
 		case "reasoningContentEvent":
 			var o struct {
@@ -864,7 +867,7 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, resp *http.Response, req
 	})
 	sse("message_stop", map[string]any{"type": "message_stop"})
 
-	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering)
+	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering, tokens)
 }
 
 // aggregateAnthropic buffers the whole turn into a single Anthropic Messages JSON.
@@ -877,8 +880,10 @@ func (s *Server) aggregateAnthropic(w http.ResponseWriter, resp *http.Response, 
 	stopReason := "END_TURN"
 	var usage, contextPct float64
 	var sawMetering bool
+	var tokens TokenMeter
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
+		tokens.Observe(payload)
 		switch et {
 		case "reasoningContentEvent":
 			var o struct {
@@ -963,10 +968,10 @@ func (s *Server) aggregateAnthropic(w http.ResponseWriter, resp *http.Response, 
 		},
 	}
 	writeJSON(w, 200, out)
-	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering)
+	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering, tokens)
 }
 
-func (s *Server) recordChatUsage(account *config.Account, apiKeyID string, usage, contextPct float64, metered bool) {
+func (s *Server) recordChatUsage(account *config.Account, apiKeyID string, usage, contextPct float64, metered bool, tokens TokenMeter) {
 	s.cfg.RecordUsage(account.ID, usage)
 	s.cfg.UpdateQuotaCurrentDelta(account.ID, 1)
 	if apiKeyID != "" {
@@ -988,12 +993,24 @@ func (s *Server) recordChatUsage(account *config.Account, apiKeyID string, usage
 	s.logs.Add(LogEntry{
 		TimeUnix: time.Now().Unix(), Account: label, ApiKey: keyLabel,
 		Status: 200, Credits: usage, Metered: metered, Kind: "chat",
+		InputTokens:  tokenCountPtr(tokens.InputTokens, tokens.SawInputTokens),
+		OutputTokens: tokenCountPtr(tokens.OutputTokens, tokens.SawOutputTokens),
 	})
 	meterInfo := ""
 	if !metered {
 		meterInfo = " (no meteringEvent)"
 	}
-	log.Printf("[translated] OK account=%s credits=%.4f ctx=%.0f%%%s", label, usage, contextPct, meterInfo)
+	log.Printf("[translated] OK account=%s credits=%.4f inputTokens=%s outputTokens=%s ctx=%.0f%%%s",
+		label, usage,
+		formatTokenCount(tokens.InputTokens, tokens.SawInputTokens),
+		formatTokenCount(tokens.OutputTokens, tokens.SawOutputTokens), contextPct, meterInfo)
+}
+
+func formatTokenCount(value int, seen bool) string {
+	if !seen {
+		return "unknown"
+	}
+	return strconv.Itoa(value)
 }
 
 // estTokens/estOutputTokens are rough approximations (~4 chars/token); Kiro

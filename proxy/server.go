@@ -395,6 +395,8 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 		s.logs.Add(LogEntry{
 			TimeUnix: time.Now().Unix(), Account: acctLabel, ApiKey: keyLabel,
 			Status: resp.StatusCode, Credits: sink.Credits, Metered: sink.SawMetering, Kind: "chat",
+			InputTokens:  tokenCountPtr(sink.Tokens.InputTokens, sink.Tokens.SawInputTokens),
+			OutputTokens: tokenCountPtr(sink.Tokens.OutputTokens, sink.Tokens.SawOutputTokens),
 		})
 		ctxInfo := ""
 		if sink.SawContext {
@@ -404,8 +406,10 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 		if !sink.SawMetering {
 			meterInfo = " (no meteringEvent)"
 		}
-		log.Printf("[proxy] OK account=%s region=%s credits=%.4f%s%s",
-			acctLabel, region, sink.Credits, ctxInfo, meterInfo)
+		log.Printf("[proxy] OK account=%s region=%s credits=%.4f inputTokens=%s outputTokens=%s%s%s",
+			acctLabel, region, sink.Credits,
+			formatTokenCount(sink.Tokens.InputTokens, sink.Tokens.SawInputTokens),
+			formatTokenCount(sink.Tokens.OutputTokens, sink.Tokens.SawOutputTokens), ctxInfo, meterInfo)
 		if os.Getenv("KPP_DEBUG_BODY") != "" && len(sink.Types) > 0 {
 			log.Printf("[re] response event-types: %v", sink.Types)
 		}

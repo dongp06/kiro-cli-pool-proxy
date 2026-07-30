@@ -64,6 +64,57 @@ func TestMeteringSinkContextUsage(t *testing.T) {
 	}
 }
 
+func TestTokenMeterReadsKiroUsageShapes(t *testing.T) {
+	tests := []struct {
+		name       string
+		payload    string
+		wantInput  int
+		wantOutput int
+	}{
+		{"camel", `{"usage":{"inputTokens":1234,"outputTokens":56}}`, 1234, 56},
+		{"snake_strings", `{"metadata":{"token_usage":{"prompt_tokens":"200","completion_tokens":"30"}}}`, 200, 30},
+		{"cache_breakdown", `{"tokenUsage":{"uncachedInputTokens":100,"cacheReadInputTokens":200,"cacheCreationInputTokens":25,"outputTokens":10}}`, 325, 10},
+		{"total_fallback", `{"usage":{"totalTokens":150,"outputTokens":20}}`, 130, 20},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var meter TokenMeter
+			meter.Observe([]byte(tc.payload))
+			if !meter.SawInputTokens || !meter.SawOutputTokens || meter.InputTokens != tc.wantInput || meter.OutputTokens != tc.wantOutput {
+				t.Fatalf("tokens = in:%v/%v out:%v/%v, want in:%d/true out:%d/true",
+					meter.InputTokens, meter.SawInputTokens, meter.OutputTokens, meter.SawOutputTokens,
+					tc.wantInput, tc.wantOutput)
+			}
+		})
+	}
+}
+
+func TestMeteringSinkExtractsKiroTokenTelemetry(t *testing.T) {
+	stream := bytes.NewReader(buildFrame("metadataEvent", []byte(`{"usage":{"inputTokens":900,"outputTokens":40}}`)))
+	sink := &MeteringSink{}
+	_, _ = io.Copy(sink, stream)
+	if !sink.Tokens.SawInputTokens || !sink.Tokens.SawOutputTokens || sink.Tokens.InputTokens != 900 || sink.Tokens.OutputTokens != 40 {
+		t.Fatalf("sink tokens = %+v, want 900 input and 40 output from Kiro", sink.Tokens)
+	}
+}
+
+func TestTokenMeterKeepsLastCumulativeCounts(t *testing.T) {
+	var meter TokenMeter
+	meter.Observe([]byte(`{"usage":{"inputTokens":100,"outputTokens":10}}`))
+	meter.Observe([]byte(`{"usage":{"inputTokens":120,"outputTokens":15}}`))
+	if meter.InputTokens != 120 || meter.OutputTokens != 15 {
+		t.Fatalf("tokens = %d/%d, want last cumulative 120/15", meter.InputTokens, meter.OutputTokens)
+	}
+}
+
+func TestTokenMeterDoesNotEstimateMissingUsage(t *testing.T) {
+	var meter TokenMeter
+	meter.Observe([]byte(`{"content":"a long assistant response","contextUsagePercentage":42}`))
+	if meter.SawInputTokens || meter.SawOutputTokens {
+		t.Fatalf("unexpected token telemetry: %+v", meter)
+	}
+}
+
 func TestMeteringSinkDoubleWrapped(t *testing.T) {
 	var stream bytes.Buffer
 	stream.Write(buildFrame("meteringEvent", []byte(`{"meteringEvent":{"usage":2.0}}`)))
@@ -99,19 +150,22 @@ func TestMeteringSinkWrappedAndStringCredit(t *testing.T) {
 	}
 }
 
-func TestCreditFromPayloadCreditAlias(t *testing.T) {
+func TestCreditFromPayloadWireContract(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		body string
 		want float64
+		ok   bool
 	}{
-		{"credits", `{"result":{"credits":6.25}}`, 6.25},
-		{"zero", `{"meteringEvent":{"usage":0}}`, 0},
+		{"wrapped_usage", `{"result":{"usage":6.25}}`, 6.25, true},
+		{"zero", `{"meteringEvent":{"usage":0}}`, 0, true},
+		{"reject_unofficial_credits_alias", `{"credits":99}`, 0, false},
+		{"reject_token_usage_object", `{"usage":{"inputTokens":100}}`, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := creditFromPayload([]byte(tc.body))
-			if !ok || got != tc.want {
-				t.Fatalf("creditFromPayload() = (%v,%v), want (%v,true)", got, ok, tc.want)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("creditFromPayload() = (%v,%v), want (%v,%v)", got, ok, tc.want, tc.ok)
 			}
 		})
 	}

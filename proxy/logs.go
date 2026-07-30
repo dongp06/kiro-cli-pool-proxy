@@ -4,14 +4,16 @@ import "sync"
 
 // LogEntry is a single proxied-request record shown in the admin Logs tab.
 type LogEntry struct {
-	TimeUnix int64   `json:"timeUnix"`
-	Account  string  `json:"account"`
-	ApiKey   string  `json:"apiKey"`
-	Status   int     `json:"status"`
-	Credits  float64 `json:"credits"`
-	Metered  bool    `json:"metered"`
-	Kind     string  `json:"kind"`
-	Err      string  `json:"err,omitempty"`
+	TimeUnix     int64   `json:"timeUnix"`
+	Account      string  `json:"account"`
+	ApiKey       string  `json:"apiKey"`
+	Status       int     `json:"status"`
+	Credits      float64 `json:"credits"`
+	Metered      bool    `json:"metered"`
+	InputTokens  *int    `json:"inputTokens,omitempty"`
+	OutputTokens *int    `json:"outputTokens,omitempty"`
+	Kind         string  `json:"kind"`
+	Err          string  `json:"err,omitempty"`
 }
 
 // LogStore is an in-memory ring buffer of recent request logs. Entries are lost

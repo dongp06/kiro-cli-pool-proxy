@@ -52,6 +52,8 @@ export interface LogEntry {
   status: number
   credits: number
   metered: boolean
+  inputTokens?: number
+  outputTokens?: number
   kind: string
   err?: string
 }

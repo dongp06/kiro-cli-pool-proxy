@@ -387,7 +387,7 @@ Union event thật quan sát được trong 1 turn có tool-call:
 | `toolUseEvent` | delta tool call (name/toolUseId/input, nhiều frame ghép lại) |
 | `contextUsageEvent` | `contextUsagePercentage` (context window %) |
 | `metadataEvent` | metadata cuối message (lưu ý tên là `metadataEvent`) |
-| `meteringEvent` | `usage` = credit cumulative (proxy đếm credit) |
+| `meteringEvent` | `usage` = credit charge của frame (proxy cộng tất cả frame trong turn) |
 
 - Frame text delta → `assistantResponseEvent`; tool-call delta → `toolUseEvent`
   (turn không gọi tool sẽ không có `toolUseEvent`).
@@ -399,7 +399,10 @@ Union event thật quan sát được trong 1 turn có tool-call:
 
 - Proxy transparent: chỉ thay `profileArn` (body) + `Authorization`/`tokentype` (header),
   giữ nguyên toàn bộ `conversationState` (history/tools/toolResults do CLI dựng).
-- Credit/turn = `meteringEvent.usage` (last-wins). Context% = `contextUsageEvent`.
+- Credit/turn = tổng `meteringEvent.usage`; không suy credit từ token. Context% = `contextUsageEvent`.
+- Token log chỉ lấy các counter upstream báo trong event payload (`inputTokens` / `outputTokens`,
+  các alias prompt/completion và cache breakdown). Nếu Kiro không gửi counter thì log để trống,
+  không dùng estimate ký tự để giả thành token thật.
 - Không cần hiểu tool protocol để proxy hoạt động — CLI tự quản tool loop; proxy chỉ
   forward + đếm. (Ghi lại đây để tham chiếu khi cần build client tương thích.)
 

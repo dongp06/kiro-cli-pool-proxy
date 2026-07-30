@@ -25,7 +25,9 @@ func TestRecordChatUsageAddsLogEntry(t *testing.T) {
 	}
 	acc, _ := cfg.GetAccountByID("acc1")
 
-	s.recordChatUsage(&acc, "key1", 1.5, 42, true)
+	s.recordChatUsage(&acc, "key1", 1.5, 42, true, TokenMeter{
+		InputTokens: 123, OutputTokens: 45, SawInputTokens: true, SawOutputTokens: true,
+	})
 
 	logs := s.logs.Snapshot()
 	if len(logs) != 1 {
@@ -47,6 +49,12 @@ func TestRecordChatUsageAddsLogEntry(t *testing.T) {
 	if !e.Metered {
 		t.Error("metered = false, want true")
 	}
+	if e.InputTokens == nil || *e.InputTokens != 123 {
+		t.Errorf("inputTokens = %v, want 123", e.InputTokens)
+	}
+	if e.OutputTokens == nil || *e.OutputTokens != 45 {
+		t.Errorf("outputTokens = %v, want 45", e.OutputTokens)
+	}
 	if e.Kind != "chat" {
 		t.Errorf("kind = %q, want chat", e.Kind)
 	}
@@ -62,7 +70,7 @@ func TestRecordChatUsageFallsBackToAccountID(t *testing.T) {
 	s := &Server{cfg: cfg, logs: NewLogStore(10), hub: NewEventHub()}
 	acc, _ := cfg.GetAccountByID("acc-no-email")
 
-	s.recordChatUsage(&acc, "key1", 0, 0, false)
+	s.recordChatUsage(&acc, "key1", 0, 0, false, TokenMeter{})
 
 	logs := s.logs.Snapshot()
 	if len(logs) != 1 {
@@ -83,6 +91,7 @@ func TestRecordChatUsageFallsBackToAccountID(t *testing.T) {
 func TestTranslatedHandlersSumMeteringEvents(t *testing.T) {
 	stream := bytes.Join([][]byte{
 		buildFrame("assistantResponseEvent", []byte(`{"content":"ok"}`)),
+		buildFrame("metadataEvent", []byte(`{"usage":{"inputTokens":1234,"outputTokens":56}}`)),
 		buildFrame("meteringEvent", []byte(`{"usage":1.25}`)),
 		buildFrame("meteringEvent", []byte(`{"usage":0.75}`)),
 		buildFrame("meteringEvent", []byte(`{"usage":0}`)),
@@ -136,6 +145,12 @@ func TestTranslatedHandlersSumMeteringEvents(t *testing.T) {
 			}
 			if logs[0].Credits != 2 || !logs[0].Metered {
 				t.Fatalf("log credits/metered = %v/%v, want 2/true", logs[0].Credits, logs[0].Metered)
+			}
+			if logs[0].InputTokens == nil || *logs[0].InputTokens != 1234 {
+				t.Fatalf("log inputTokens = %v, want 1234", logs[0].InputTokens)
+			}
+			if logs[0].OutputTokens == nil || *logs[0].OutputTokens != 56 {
+				t.Fatalf("log outputTokens = %v, want 56", logs[0].OutputTokens)
 			}
 			updated, _ := cfg.GetAccountByID("acc1")
 			if updated.Credits != 2 {

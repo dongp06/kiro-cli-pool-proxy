@@ -333,12 +333,14 @@ func (s *Server) streamOpenAI(w http.ResponseWriter, resp *http.Response, req *o
 	stopReason := "END_TURN"
 	var usage, contextPct float64
 	var sawMetering bool
+	var tokens TokenMeter
 	toolIndex := map[string]int{}
 	nextToolIdx := 0
 	curToolID := ""
 	outChars := 0
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
+		tokens.Observe(payload)
 		switch et {
 		case "reasoningContentEvent":
 			var o struct {
@@ -413,7 +415,7 @@ func (s *Server) streamOpenAI(w http.ResponseWriter, resp *http.Response, req *o
 	if flusher != nil {
 		flusher.Flush()
 	}
-	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering)
+	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering, tokens)
 }
 
 func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req *oaiRequest, account *config.Account, apiKeyID string) {
@@ -424,8 +426,10 @@ func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req
 	stopReason := "END_TURN"
 	var usage, contextPct float64
 	var sawMetering bool
+	var tokens TokenMeter
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
+		tokens.Observe(payload)
 		switch et {
 		case "reasoningContentEvent":
 			var o struct {
@@ -511,7 +515,7 @@ func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req
 		},
 	}
 	writeJSON(w, 200, out)
-	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering)
+	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering, tokens)
 }
 
 func estOpenAITokens(req *oaiRequest) int {

@@ -71,11 +71,15 @@ export function LogsTab({ t, toast, onUnauth }: { t: T; toast: ToastFn; onUnauth
                   <span className="font-mono text-[var(--faint)]">{fmtClock(l.timeUnix)}</span>
                   <span className="text-[var(--muted)]">{t('logs.account')} <b className="text-[var(--text)]">{l.account}</b></span>
                   <span className="text-[var(--muted)]">{t('logs.key')} <b className="text-[var(--text)]">{l.apiKey || '—'}</b></span>
-                  {ok && l.metered
-                    ? <span className="ml-auto inline-flex items-center gap-1 text-[var(--muted)]"><I.Coin /> <b className="text-[var(--text)]">{fmtNum(l.credits)}</b> {t('logs.credits')}</span>
-                    : ok
-                      ? <span className="ml-auto text-[var(--warn)]" title={t('logs.unmeteredHint')}>{t('logs.unmetered')}</span>
-                      : <span className="ml-auto text-[var(--danger)] break-all">{l.err}</span>}
+                  {ok ? <>
+                    <span className="ml-auto inline-flex items-center gap-2 text-[var(--muted)]" title={t('logs.kiroTokensHint')}>
+                      <span>{t('logs.inputTokens')} <b className="text-[var(--text)] tabular-nums">{typeof l.inputTokens === 'number' ? fmtNum(l.inputTokens) : '—'}</b></span>
+                      <span>{t('logs.outputTokens')} <b className="text-[var(--text)] tabular-nums">{typeof l.outputTokens === 'number' ? fmtNum(l.outputTokens) : '—'}</b></span>
+                    </span>
+                    {l.metered
+                      ? <span className="inline-flex items-center gap-1 text-[var(--muted)]"><I.Coin /> <b className="text-[var(--text)]">{fmtNum(l.credits)}</b> {t('logs.credits')}</span>
+                      : <span className="text-[var(--warn)]" title={t('logs.unmeteredHint')}>{t('logs.unmetered')}</span>}
+                  </> : <span className="ml-auto text-[var(--danger)] break-all">{l.err}</span>}
                 </div>
               )
             })}
