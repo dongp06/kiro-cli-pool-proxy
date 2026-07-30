@@ -9,6 +9,7 @@ type LogEntry struct {
 	ApiKey   string  `json:"apiKey"`
 	Status   int     `json:"status"`
 	Credits  float64 `json:"credits"`
+	Metered  bool    `json:"metered"`
 	Kind     string  `json:"kind"`
 	Err      string  `json:"err,omitempty"`
 }

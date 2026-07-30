@@ -44,10 +44,10 @@ func NewServer(cfg *config.Config, p *pool.Pool) *Server {
 	hub := NewEventHub()
 	logs.SetHub(hub)
 	return &Server{
-		pool: p,
-		cfg:  cfg,
-		logs: logs,
-		hub:  hub,
+		pool:  p,
+		cfg:   cfg,
+		logs:  logs,
+		hub:   hub,
 		admin: NewAdminHandler(cfg, p, logs, hub),
 		client: &http.Client{
 			Timeout: 10 * time.Minute,
@@ -377,7 +377,7 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 		// in INVOCATIONS (request count) per GetUsageLimits AGENTIC_REQUEST. So
 		// track credits for accounting, but increment the quota counter by 1
 		// invocation. The 5-min GetUsageLimits poll re-syncs the true value.
-		s.cfg.RecordUsage(account.ID, sink.Credits) // Credits + Requests++
+		s.cfg.RecordUsage(account.ID, sink.Credits)  // Credits + Requests++
 		s.cfg.UpdateQuotaCurrentDelta(account.ID, 1) // one invocation
 		if apiKeyID != "" {
 			s.cfg.RecordKeyUsage(apiKeyID, sink.Credits)
@@ -394,7 +394,7 @@ func (s *Server) streamResponse(w http.ResponseWriter, resp *http.Response, acco
 		}
 		s.logs.Add(LogEntry{
 			TimeUnix: time.Now().Unix(), Account: acctLabel, ApiKey: keyLabel,
-			Status: resp.StatusCode, Credits: sink.Credits, Kind: "chat",
+			Status: resp.StatusCode, Credits: sink.Credits, Metered: sink.SawMetering, Kind: "chat",
 		})
 		ctxInfo := ""
 		if sink.SawContext {
@@ -512,6 +512,7 @@ func (s *Server) rewriteUsageResponse(w http.ResponseWriter, resp *http.Response
 	w.Write(out)
 	return true
 }
+
 // keyResetUnix computes the next credit-reset timestamp for an API key.
 // Credits reset on a rolling 30-day cycle anchored to the key's creation date;
 // the returned value is the next cycle boundary at or after now (unix seconds).

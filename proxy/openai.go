@@ -332,6 +332,7 @@ func (s *Server) streamOpenAI(w http.ResponseWriter, resp *http.Response, req *o
 
 	stopReason := "END_TURN"
 	var usage, contextPct float64
+	var sawMetering bool
 	toolIndex := map[string]int{}
 	nextToolIdx := 0
 	curToolID := ""
@@ -390,11 +391,9 @@ func (s *Server) streamOpenAI(w http.ResponseWriter, resp *http.Response, req *o
 				contextPct = o.Pct
 			}
 		case "meteringEvent":
-			var o struct {
-				Usage float64 `json:"usage"`
-			}
-			if json.Unmarshal(payload, &o) == nil {
-				usage = o.Usage
+			if n, ok := creditFromPayload(payload); ok {
+				usage += n
+				sawMetering = true
 			}
 		}
 	})
@@ -414,7 +413,7 @@ func (s *Server) streamOpenAI(w http.ResponseWriter, resp *http.Response, req *o
 	if flusher != nil {
 		flusher.Flush()
 	}
-	s.recordChatUsage(account, apiKeyID, usage, contextPct)
+	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering)
 }
 
 func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req *oaiRequest, account *config.Account, apiKeyID string) {
@@ -424,6 +423,7 @@ func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req
 	var toolOrder []string
 	stopReason := "END_TURN"
 	var usage, contextPct float64
+	var sawMetering bool
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
 		switch et {
@@ -466,11 +466,9 @@ func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req
 				contextPct = o.Pct
 			}
 		case "meteringEvent":
-			var o struct {
-				Usage float64 `json:"usage"`
-			}
-			if json.Unmarshal(payload, &o) == nil {
-				usage = o.Usage
+			if n, ok := creditFromPayload(payload); ok {
+				usage += n
+				sawMetering = true
 			}
 		}
 	})
@@ -513,7 +511,7 @@ func (s *Server) aggregateOpenAI(w http.ResponseWriter, resp *http.Response, req
 		},
 	}
 	writeJSON(w, 200, out)
-	s.recordChatUsage(account, apiKeyID, usage, contextPct)
+	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering)
 }
 
 func estOpenAITokens(req *oaiRequest) int {

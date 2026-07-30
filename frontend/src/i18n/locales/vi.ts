@@ -139,6 +139,8 @@ export const vi: Record<string, string> = {
   'logs.account': 'Account',
   'logs.key': 'Key',
   'logs.credits': 'credits',
+  'logs.unmetered': 'Không có dữ liệu metering',
+  'logs.unmeteredHint': 'Response upstream không có metering event đọc được; hệ thống không ghi nhận 0 như một mức phí đã xác nhận.',
   'toast.accOn': 'Đã bật account',
   'toast.accOff': 'Đã tắt account',
   'toast.accDeleted': 'Đã xóa account',

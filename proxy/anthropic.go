@@ -29,12 +29,12 @@ import (
 // ---- Anthropic request types ----
 
 type anthRequest struct {
-	Model     string           `json:"model"`
-	MaxTokens int              `json:"max_tokens"`
-	System    json.RawMessage  `json:"system"` // string OR [{type:text,text}]
-	Messages  []anthMessage    `json:"messages"`
-	Tools     []anthTool       `json:"tools"`
-	Stream    bool             `json:"stream"`
+	Model     string          `json:"model"`
+	MaxTokens int             `json:"max_tokens"`
+	System    json.RawMessage `json:"system"` // string OR [{type:text,text}]
+	Messages  []anthMessage   `json:"messages"`
+	Tools     []anthTool      `json:"tools"`
+	Stream    bool            `json:"stream"`
 }
 
 type anthMessage struct {
@@ -230,9 +230,9 @@ func buildKiroBody(req *anthRequest) ([]byte, error) {
 	}
 
 	convState := map[string]any{
-		"conversationId": newUUID(),
-		"history":        history,
-		"currentMessage": map[string]any{"userInputMessage": curUIM},
+		"conversationId":  newUUID(),
+		"history":         history,
+		"currentMessage":  map[string]any{"userInputMessage": curUIM},
 		"chatTriggerType": "MANUAL",
 		"agentTaskType":   "vibe",
 	}
@@ -419,7 +419,7 @@ var kiroModels = map[string]bool{
 	"claude-opus-4.8": true, "claude-opus-4.7": true, "claude-opus-4.6": true, "claude-opus-4.5": true,
 	"claude-sonnet-4.6": true, "claude-sonnet-4.5": true, "claude-sonnet-4": true,
 	"claude-haiku-4.5": true,
-	"gpt-5.6-sol": true, "gpt-5.6-terra": true, "gpt-5.6-luna": true,
+	"gpt-5.6-sol":      true, "gpt-5.6-terra": true, "gpt-5.6-luna": true,
 	"deepseek-3.2": true, "minimax-m2.5": true, "minimax-m2.1": true,
 	"glm-5": true, "qwen3-coder-next": true,
 }
@@ -657,7 +657,7 @@ func kiroFrameReader(r io.Reader, cb func(eventType string, payload []byte)) {
 				}
 				headers := buf[esPreludeLen : esPreludeLen+headersLen]
 				payload := buf[esPreludeLen+headersLen : total-esMsgCRCLen]
-				cb(eventTypeFromHeaders(headers), append([]byte(nil), payload...))
+				cb(canonicalEventType(eventTypeFromHeaders(headers)), append([]byte(nil), payload...))
 				buf = buf[total:]
 			}
 		}
@@ -751,6 +751,7 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, resp *http.Response, req
 	stopReason := "END_TURN"
 	var usage float64
 	var contextPct float64
+	var sawMetering bool
 
 	closeOpen := func() {
 		if openIndex >= 0 {
@@ -848,11 +849,9 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, resp *http.Response, req
 				contextPct = o.Pct
 			}
 		case "meteringEvent":
-			var o struct {
-				Usage float64 `json:"usage"`
-			}
-			if json.Unmarshal(payload, &o) == nil {
-				usage = o.Usage
+			if n, ok := creditFromPayload(payload); ok {
+				usage += n
+				sawMetering = true
 			}
 		}
 	})
@@ -865,7 +864,7 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, resp *http.Response, req
 	})
 	sse("message_stop", map[string]any{"type": "message_stop"})
 
-	s.recordChatUsage(account, apiKeyID, usage, contextPct)
+	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering)
 }
 
 // aggregateAnthropic buffers the whole turn into a single Anthropic Messages JSON.
@@ -877,6 +876,7 @@ func (s *Server) aggregateAnthropic(w http.ResponseWriter, resp *http.Response, 
 	var toolOrder []string
 	stopReason := "END_TURN"
 	var usage, contextPct float64
+	var sawMetering bool
 
 	kiroFrameReader(resp.Body, func(et string, payload []byte) {
 		switch et {
@@ -922,11 +922,9 @@ func (s *Server) aggregateAnthropic(w http.ResponseWriter, resp *http.Response, 
 				contextPct = o.Pct
 			}
 		case "meteringEvent":
-			var o struct {
-				Usage float64 `json:"usage"`
-			}
-			if json.Unmarshal(payload, &o) == nil {
-				usage = o.Usage
+			if n, ok := creditFromPayload(payload); ok {
+				usage += n
+				sawMetering = true
 			}
 		}
 	})
@@ -965,10 +963,10 @@ func (s *Server) aggregateAnthropic(w http.ResponseWriter, resp *http.Response, 
 		},
 	}
 	writeJSON(w, 200, out)
-	s.recordChatUsage(account, apiKeyID, usage, contextPct)
+	s.recordChatUsage(account, apiKeyID, usage, contextPct, sawMetering)
 }
 
-func (s *Server) recordChatUsage(account *config.Account, apiKeyID string, usage, contextPct float64) {
+func (s *Server) recordChatUsage(account *config.Account, apiKeyID string, usage, contextPct float64, metered bool) {
 	s.cfg.RecordUsage(account.ID, usage)
 	s.cfg.UpdateQuotaCurrentDelta(account.ID, 1)
 	if apiKeyID != "" {
@@ -989,9 +987,13 @@ func (s *Server) recordChatUsage(account *config.Account, apiKeyID string, usage
 	}
 	s.logs.Add(LogEntry{
 		TimeUnix: time.Now().Unix(), Account: label, ApiKey: keyLabel,
-		Status: 200, Credits: usage, Kind: "chat",
+		Status: 200, Credits: usage, Metered: metered, Kind: "chat",
 	})
-	log.Printf("[anthropic] OK account=%s credits=%.4f ctx=%.0f%%", label, usage, contextPct)
+	meterInfo := ""
+	if !metered {
+		meterInfo = " (no meteringEvent)"
+	}
+	log.Printf("[translated] OK account=%s credits=%.4f ctx=%.0f%%%s", label, usage, contextPct, meterInfo)
 }
 
 // estTokens/estOutputTokens are rough approximations (~4 chars/token); Kiro

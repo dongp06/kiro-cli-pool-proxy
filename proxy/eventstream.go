@@ -9,12 +9,12 @@ import (
 
 // AWS EventStream framing constants (confirmed from kiro-cli / Kiro-Go 1:1).
 const (
-	esPreludeLen    = 12                // total_len(4) + headers_len(4) + prelude_crc(4)
-	esMsgCRCLen     = 4                 // trailing message CRC
+	esPreludeLen    = 12 // total_len(4) + headers_len(4) + prelude_crc(4)
+	esMsgCRCLen     = 4  // trailing message CRC
 	esMinMsgBytes   = esPreludeLen + esMsgCRCLen
-	esMaxMsgBytes   = 25 * 1024 * 1024  // 25 MiB sanity cap
-	esMaxHeaderLen  = 128 * 1024        // 128 KiB header cap
-	esMaxBufferSize = 32 * 1024 * 1024  // stop parsing beyond this (safety)
+	esMaxMsgBytes   = 25 * 1024 * 1024 // 25 MiB sanity cap
+	esMaxHeaderLen  = 128 * 1024       // 128 KiB header cap
+	esMaxBufferSize = 32 * 1024 * 1024 // stop parsing beyond this (safety)
 )
 
 // MeteringSink is an io.Writer that incrementally parses an AWS EventStream as
@@ -30,7 +30,7 @@ type MeteringSink struct {
 	buf     []byte
 	stopped bool
 
-	// Credits is the turn's cumulative credit (last-wins across meteringEvents).
+	// Credits is the turn's cumulative credit (sum of all meteringEvents).
 	Credits     float64
 	SawMetering bool
 	// ContextPct is the last observed context-window usage percentage.
@@ -97,6 +97,7 @@ func (m *MeteringSink) parseFrames() {
 // handleFrame inspects a single frame's headers and payload.
 func (m *MeteringSink) handleFrame(headers, payload []byte) {
 	eventType := eventTypeFromHeaders(headers)
+	eventType = canonicalEventType(eventType)
 	if eventType != "" {
 		if m.Types == nil {
 			m.Types = map[string]int{}
@@ -106,7 +107,7 @@ func (m *MeteringSink) handleFrame(headers, payload []byte) {
 	switch eventType {
 	case "meteringEvent":
 		if usage, ok := creditFromPayload(payload); ok {
-			m.Credits = usage // last-wins (cumulative)
+			m.Credits += usage
 			m.SawMetering = true
 		}
 	case "contextUsageEvent":
@@ -177,22 +178,82 @@ func eventTypeFromHeaders(headers []byte) string {
 	return ""
 }
 
+// canonicalEventType keeps parsing resilient to runtimes that serialize the
+// Smithy union name as kebab-case or snake_case instead of camelCase.
+func canonicalEventType(eventType string) string {
+	n := strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(strings.TrimSpace(eventType)))
+	switch n {
+	case "meteringevent":
+		return "meteringEvent"
+	case "contextusageevent":
+		return "contextUsageEvent"
+	case "assistantresponseevent":
+		return "assistantResponseEvent"
+	case "reasoningcontentevent":
+		return "reasoningContentEvent"
+	case "tooluseevent":
+		return "toolUseEvent"
+	case "metadataevent":
+		return "metadataEvent"
+	}
+	return eventType
+}
+
 // creditFromPayload extracts the credit usage from a meteringEvent payload.
 // Handles flat {"usage": N} and double-wrapped {"meteringEvent": {"usage": N}}.
 func creditFromPayload(payload []byte) (float64, bool) {
-	var obj map[string]interface{}
-	if json.Unmarshal(payload, &obj) != nil {
+	var value any
+	if json.Unmarshal(payload, &value) != nil {
 		return 0, false
 	}
-	if usage, ok := numberField(obj, "usage"); ok {
-		return usage, true
-	}
-	if nested, ok := obj["meteringEvent"].(map[string]interface{}); ok {
-		if usage, ok := numberField(nested, "usage"); ok {
-			return usage, true
+	return findCredit(value)
+}
+
+// findCredit tolerates the wire-shape variations seen across Kiro runtimes:
+// flat/nested objects, arrays, and numeric values encoded as strings. Search
+// only fields named usage/credit(s), so unrelated numbers cannot be mistaken
+// for a charge. A present zero is valid and is still reported as found.
+func findCredit(value any) (float64, bool) {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, child := range v {
+			norm := strings.ToLower(strings.TrimSpace(key))
+			if norm == "usage" || norm == "credit" || norm == "credits" {
+				if n, ok := numericValue(child); ok {
+					return n, true
+				}
+			}
+		}
+		for _, child := range v {
+			if n, ok := findCredit(child); ok {
+				return n, true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if n, ok := findCredit(child); ok {
+				return n, true
+			}
 		}
 	}
 	return 0, false
+}
+
+func numericValue(value any) (float64, bool) {
+	switch n := value.(type) {
+	case float64:
+		return n, true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return f, err == nil
+	case map[string]any, []any:
+		return findCredit(n)
+	default:
+		return 0, false
+	}
 }
 
 // numberField reads a numeric field that may be float64, json.Number, or string.

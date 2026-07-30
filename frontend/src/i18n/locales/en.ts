@@ -139,6 +139,8 @@ export const en: Record<string, string> = {
   'logs.account': 'Account',
   'logs.key': 'Key',
   'logs.credits': 'credits',
+  'logs.unmetered': 'Metering unavailable',
+  'logs.unmeteredHint': 'The upstream response did not contain a readable metering event; 0 is not recorded as a confirmed charge.',
   'toast.accOn': 'Account enabled',
   'toast.accOff': 'Account disabled',
   'toast.accDeleted': 'Account deleted',

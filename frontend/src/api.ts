@@ -51,6 +51,7 @@ export interface LogEntry {
   apiKey: string
   status: number
   credits: number
+  metered: boolean
   kind: string
   err?: string
 }

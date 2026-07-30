@@ -36,7 +36,7 @@ func TestMeteringSinkExtractsCredit(t *testing.T) {
 	var stream bytes.Buffer
 	stream.Write(buildFrame("assistantResponseEvent", []byte(`{"content":"hello"}`)))
 	stream.Write(buildFrame("meteringEvent", []byte(`{"unit":"credit","usage":0.5}`)))
-	stream.Write(buildFrame("meteringEvent", []byte(`{"unit":"credit","usage":1.25}`))) // cumulative, last-wins
+	stream.Write(buildFrame("meteringEvent", []byte(`{"unit":"credit","usage":1.25}`)))
 
 	sink := &MeteringSink{}
 	io.Copy(sink, &stream)
@@ -44,8 +44,8 @@ func TestMeteringSinkExtractsCredit(t *testing.T) {
 	if !sink.SawMetering {
 		t.Fatal("expected SawMetering=true")
 	}
-	if sink.Credits != 1.25 {
-		t.Fatalf("expected last-wins credit 1.25, got %v", sink.Credits)
+	if sink.Credits != 1.75 {
+		t.Fatalf("expected summed credit 1.75, got %v", sink.Credits)
 	}
 	if sink.Frames != 3 {
 		t.Fatalf("expected 3 frames, got %d", sink.Frames)
@@ -73,6 +73,59 @@ func TestMeteringSinkDoubleWrapped(t *testing.T) {
 
 	if !sink.SawMetering || sink.Credits != 2.0 {
 		t.Fatalf("expected double-wrapped credit 2.0, got %v", sink.Credits)
+	}
+}
+
+func TestMeteringSinkSumsAllMeteringEvents(t *testing.T) {
+	var stream bytes.Buffer
+	stream.Write(buildFrame("meteringEvent", []byte(`{"usage":1.25}`)))
+	stream.Write(buildFrame("meteringEvent", []byte(`{"usage":0.75}`)))
+	stream.Write(buildFrame("meteringEvent", []byte(`{"usage":0}`)))
+
+	sink := &MeteringSink{}
+	_, _ = io.Copy(sink, &stream)
+	if !sink.SawMetering || sink.Credits != 2 {
+		t.Fatalf("expected summed credit 2, got saw=%v credit=%v", sink.SawMetering, sink.Credits)
+	}
+}
+
+func TestMeteringSinkWrappedAndStringCredit(t *testing.T) {
+	var stream bytes.Buffer
+	stream.Write(buildFrame("meteringEvent", []byte(`{"event":{"meteringEvent":{"usage":"4.75"}}}`)))
+	sink := &MeteringSink{}
+	io.Copy(sink, &stream)
+	if !sink.SawMetering || sink.Credits != 4.75 {
+		t.Fatalf("expected wrapped string credit 4.75, got saw=%v credit=%v", sink.SawMetering, sink.Credits)
+	}
+}
+
+func TestCreditFromPayloadCreditAlias(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want float64
+	}{
+		{"credits", `{"result":{"credits":6.25}}`, 6.25},
+		{"zero", `{"meteringEvent":{"usage":0}}`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := creditFromPayload([]byte(tc.body))
+			if !ok || got != tc.want {
+				t.Fatalf("creditFromPayload() = (%v,%v), want (%v,true)", got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalEventType(t *testing.T) {
+	for input, want := range map[string]string{
+		"metering-event":     "meteringEvent",
+		"metering_event":     "meteringEvent",
+		"context-usageEvent": "contextUsageEvent",
+	} {
+		if got := canonicalEventType(input); got != want {
+			t.Errorf("canonicalEventType(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
